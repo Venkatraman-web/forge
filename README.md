@@ -35,6 +35,66 @@ go run ./examples/hello submit Ada                # succeeded: result={"message"
 about 130 lines. To build your own: submit with [`sdk/forgeclient`](sdk/forgeclient) and write your workers
 with [`sdk/workerruntime`](sdk/workerruntime).
 
+## Use the SDK in your own project
+
+You need Go 1.24 or newer and a running Forge (the quickstart above). In your own Go project:
+
+```bash
+go get github.com/Venkatraman-web/forge@v0.1.0
+```
+
+**1. Submit jobs from your application** with `forgeclient`:
+
+```go
+import "github.com/Venkatraman-web/forge/sdk/forgeclient"
+
+client, err := forgeclient.New(forgeclient.Config{
+    BaseURL: "http://FORGE_HOST:8080",
+    APIKey:  os.Getenv("FORGE_API_KEY"), // the submit key
+})
+job, err := client.Submit(ctx, forgeclient.SubmitRequest{
+    Type:  "email.send",
+    Input: map[string]string{"to": "ada@example.com"},
+})
+// later: client.Get(ctx, job.ID) returns the status and result
+// many at once: client.SubmitBatch(ctx, []forgeclient.SubmitRequest{...})
+```
+
+**2. Run workers that do the work** with `workerruntime`:
+
+```go
+import (
+    "github.com/Venkatraman-web/forge/sdk/workerclient"
+    "github.com/Venkatraman-web/forge/sdk/workerruntime"
+)
+
+wc, err := workerclient.New(workerclient.Config{
+    BaseURL: "http://FORGE_HOST:8081",
+    APIKey:  os.Getenv("FORGE_WORKER_API_KEY"), // the worker key
+})
+w, err := workerruntime.New(workerruntime.Config{Client: wc, Name: "mailer", Concurrency: 8})
+err = w.Handle("email.send", func(ctx context.Context, job workerruntime.Job) (any, error) {
+    var in struct{ To string }
+    if err := job.Decode(&in); err != nil {
+        return nil, workerruntime.Permanent(err) // a bad input will never get better: do not retry
+    }
+    return map[string]string{"status": "sent to " + in.To}, nil
+})
+err = w.Run(ctx) // claims jobs, keeps leases alive, reports results, shuts down cleanly
+```
+
+**3. Tell Forge your job types.** Forge rejects types it does not know: list them in
+`FORGE_REMOTE_JOB_TYPES` (for example `email.send`) in your `.env`.
+
+Three rules to know:
+
+- A job can run more than once (a worker may crash after doing the work), so a handler must be safe to repeat.
+- Return `workerruntime.Permanent(err)` for an error that retrying cannot fix; any other error is retried.
+- A job's result can be read by anyone with the submit key, so never put secrets in it.
+
+[`examples/hello`](examples/hello/main.go) is a complete working program, and [docs/reference.md](docs/reference.md)
+describes every setting and function.
+
 ## What you get
 
 - **At-least-once execution** with leases and heartbeats: a worker that dies loses its job to another
