@@ -1,0 +1,6 @@
+{
+  "name": "saturation", "title": "F. Saturation test", "kind": "saturation",
+  "description": "Concurrency is increased geometrically (stage length fixed) until a stop condition: error rate, p99 latency, throughput plateau, host CPU or a generator-saturation warning. Reports the highest tested configuration that met the stability criteria and the first that did not. The background backlog is reported per stage but is not a stop condition (the workers have separate capacity). A single stable stage is not a capacity claim.",
+  "params": { "seed": 6001, "start_concurrency": 10, "factor": 1.6, "stage_seconds": 12, "max_concurrency": 200, "payment_mix": {"success": 80, "decline": 12, "temp_failure": 8}, "inventory_per_product": 10000000, "drain_timeout_s": 180, "stop_error_rate_pct": 2.0, "stop_p99_ms": 8000, "stop_host_cpu_pct": 95 },
+  "objectives": {}
+}

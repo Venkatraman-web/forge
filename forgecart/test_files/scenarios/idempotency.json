@@ -1,0 +1,6 @@
+{
+  "name": "idempotency", "title": "I. Idempotency and duplicate delivery", "kind": "idempotency",
+  "description": "Each logical order is submitted several times concurrently with the same Idempotency-Key (checkout and payment), then duplicate Forge jobs carrying the same event ids are submitted through Forge's public API. Verifies one order, one payment attempt and one effect per event, and that duplicates succeed as duplicates.",
+  "params": { "seed": 9001, "logical_orders": 60, "duplicate_submissions": 5, "duplicate_job_events": 20, "payment_mix": {"success": 100, "decline": 0, "temp_failure": 0}, "inventory_per_product": 1000000, "drain_timeout_s": 120 },
+  "objectives": {}
+}

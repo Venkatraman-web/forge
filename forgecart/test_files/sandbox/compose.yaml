@@ -1,0 +1,50 @@
+# Load-test sandbox: two disposable PostgreSQL servers, one for Forge's job
+# database and one for ForgeCart's application database. It is started ONLY by the
+# suite (test_files), under a unique project name "forgecart-lt-<run id>", with its
+# own network and tmpfs storage (nothing persists, no named volumes). It has no
+# relation to the developer database in the repository's compose.yaml.
+# The Forge, ForgeCart, dispatcher and worker processes run on the host (the
+# repository has no Dockerfiles) and are managed by the suite.
+name: ${LT_PROJECT}
+
+x-pg: &pg
+  image: postgres:16-alpine
+  restart: "no"
+  cpus: ${LT_PG_CPUS}
+  mem_limit: ${LT_PG_MEM}
+  tmpfs:
+    - /var/lib/postgresql/data
+  networks: [lt]
+  environment:
+    POSTGRES_USER: lt
+    POSTGRES_PASSWORD: ${LT_DB_PASSWORD}
+    POSTGRES_DB: postgres
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U lt -d postgres"]
+    interval: 1s
+    timeout: 3s
+    retries: 30
+
+services:
+  forge-db:
+    <<: *pg
+    container_name: ${LT_PROJECT}-forge-db
+    command: ["postgres", "-c", "max_connections=${LT_PG_MAX_CONN}"]
+    ports: ["127.0.0.1:${LT_FORGE_DB_PORT}:5432"]
+    labels:
+      com.forgecart.loadtest: "true"
+      com.forgecart.loadtest.run: "${LT_RUN}"
+      com.forgecart.loadtest.role: "forge-db"
+  app-db:
+    <<: *pg
+    container_name: ${LT_PROJECT}-app-db
+    command: ["postgres", "-c", "max_connections=${LT_PG_MAX_CONN}"]
+    ports: ["127.0.0.1:${LT_APP_DB_PORT}:5432"]
+    labels:
+      com.forgecart.loadtest: "true"
+      com.forgecart.loadtest.run: "${LT_RUN}"
+      com.forgecart.loadtest.role: "app-db"
+
+networks:
+  lt:
+    name: ${LT_PROJECT}-net

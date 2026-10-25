@@ -1,0 +1,6 @@
+{
+  "name": "smoke", "title": "A. Smoke test", "kind": "smoke",
+  "description": "A small sequential workload (concurrency 1) with a success-only payment profile, so every order produces all five events. It verifies readiness, checkout, payment, outbox publication, all five worker types and final business-effect consistency. It is the correctness gate for the rest of the suite.",
+  "params": { "seed": 1001, "workflows": 10, "concurrency": 1, "payment_mix": {"success": 100, "decline": 0, "temp_failure": 0}, "inventory_per_product": 1000000, "drain_timeout_s": 90 },
+  "objectives": {}
+}

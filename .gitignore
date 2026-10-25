@@ -1,0 +1,71 @@
+# Local environment files hold credentials; never commit them.
+# Only the placeholder template .env.example is tracked.
+.env
+.env.*
+!.env.example
+
+# Generated benchmark output (raw measurements, service logs, archived reports).
+# The canonical forgecart/test_files/report.md and the written audit
+# documents are tracked; the raw runs behind them are not.
+forgecart/test_files/results/
+forgecart/test_files/report-partial.md
+*.log
+
+# Binaries, build output and disposable test artifacts.
+/bin/
+*.exe
+*.test
+*.out
+*.tmp
+*.swp
+*~
+.DS_Store
+
+# Local database data and scratch material.
+pgdata/
+*.sqlite
+*.sqlite3
+*.db
+*.pid
+/scratch/
+*.overlay.json
+
+# Binary produced by "go build" inside the test harness directory.
+/forgecart/test_files/test_files
+
+# Tool, editor and operating-system folders and files that belong to one person's machine.
+.claude/
+.vscode/
+.idea/
+.cursor/
+*.code-workspace
+Thumbs.db
+desktop.ini
+.Trash-*/
+
+# More local environment and secret files: keys, certificates, key files, cloud credentials.
+.envrc
+*.pem
+*.key
+*.crt
+*.p12
+keys.json
+.aws/
+.ssh/
+secrets
+*.secret
+
+# Go: coverage output, local workspace file, profiling dumps.
+*.coverprofile
+coverage.out
+go.work
+go.work.sum
+*.prof
+*.pprof
+
+# Kept private (not published): the AI-assistant rules file and the build-history records.
+CLAUDE.md
+docs/history/
+
+# The MIT licence text is added on GitHub itself (Add file > Create new file > LICENSE), so it is not tracked here.
+LICENSE

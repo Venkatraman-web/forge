@@ -1,0 +1,6 @@
+{
+  "smoke": ["smoke"],
+  "standard": ["smoke", "baseline", "ramp", "stock-contention", "pipeline"],
+  "full": ["smoke", "baseline", "ramp", "burst", "soak", "saturation", "stock-contention", "payment-mix", "idempotency", "pipeline", "worker-scaling", "recovery"],
+  "all": ["smoke", "baseline", "ramp", "burst", "soak", "saturation", "stock-contention", "payment-mix", "idempotency", "pipeline", "worker-scaling", "recovery"]
+}

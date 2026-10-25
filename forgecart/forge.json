@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "job_types": {
+    "inventory.reconcile":    { "default_max_attempts": 5, "max_max_attempts": 8, "default_timeout": "20s", "max_timeout": "30s" },
+    "invoice.generate":       { "default_max_attempts": 5, "max_max_attempts": 8, "default_timeout": "15s", "max_timeout": "30s" },
+    "fulfillment.prepare":    { "default_max_attempts": 5, "max_max_attempts": 8, "default_timeout": "15s", "max_timeout": "30s" },
+    "notification.send":      { "default_max_attempts": 5, "max_max_attempts": 8, "default_timeout": "10s", "max_timeout": "30s" }
+  }
+}

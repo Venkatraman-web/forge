@@ -1,0 +1,32 @@
+# Prometheus configuration for the optional "observability" compose profile.
+# Compose substitutes TARGET (FORGE_OPERATOR_TARGET) and writes the operator
+# key to /tmp/operator.key before Prometheus starts; see compose.yaml.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: forge
+    authorization:
+      type: Bearer
+      credentials_file: /tmp/operator.key
+    static_configs:
+      - targets: ["TARGET"]
+
+  # ForgeCart's shop API: what shoppers experience (request rate, status and
+  # latency per route, payment outcomes) and the outbox backlog. Its metrics
+  # listener needs its own key (FORGECART_METRICS_KEY). List "host:port" in
+  # observability/targets/shop.yml; empty by default, so a run without
+  # ForgeCart is unchanged.
+  - job_name: forgecart
+    authorization:
+      type: Bearer
+      credentials_file: /tmp/shop.key
+    file_sd_configs:
+      - files: ["/etc/forge/targets/shop.yml"]
+
+  # CPU, memory and disk of the machines Forge, its database and the workers run
+  # on, from node_exporter. Add a machine by listing "host:9100" in
+  # observability/targets/node.yml (empty by default, so a local run is unchanged).
+  - job_name: node
+    file_sd_configs:
+      - files: ["/etc/forge/targets/node.yml"]

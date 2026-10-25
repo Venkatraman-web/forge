@@ -1,0 +1,6 @@
+{
+  "name": "soak", "title": "E. Sustained / soak test", "kind": "soak",
+  "description": "A bounded sustained workload (concurrency 10) to look at stability over time: throughput and latency per window, backlog, process memory and database connections. The default duration is a short validation setting; use --soak-seconds for a longer benchmark (hard maximum 1800 s).",
+  "params": { "seed": 5001, "concurrency": 10, "duration_s": 60, "window_s": 10, "payment_mix": {"success": 80, "decline": 12, "temp_failure": 8}, "inventory_per_product": 10000000, "drain_timeout_s": 180 },
+  "objectives": {}
+}

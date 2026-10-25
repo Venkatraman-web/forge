@@ -1,0 +1,6 @@
+{
+  "name": "stock-contention", "title": "G. Stock contention", "kind": "stock",
+  "description": "Deliberately constrained inventory (40 units per product, 200 in total) against 400 workflows at concurrency 20. Stock conflicts are expected business outcomes. Checks that exactly the available stock is reserved, nothing is oversold and the accepted orders complete their background work.",
+  "params": { "seed": 7001, "workflows": 400, "concurrency": 20, "payment_mix": {"success": 100, "decline": 0, "temp_failure": 0}, "inventory_per_product": 40, "drain_timeout_s": 120 },
+  "objectives": {}
+}

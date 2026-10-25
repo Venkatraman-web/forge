@@ -1,0 +1,166 @@
+name: forge
+
+# Local development PostgreSQL for Forge. Not for production.
+# Configuration comes from a .env file next to this file (copy .env.example).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      # The image creates this user and database on the first start only.
+      # The ":?" form makes Compose stop with a clear message if a value is missing.
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+    ports:
+      # 127.0.0.1 keeps the database reachable from this machine only.
+      - "127.0.0.1:${FORGE_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - forge_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # $$ stops Compose substituting the value; the container's shell does it.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # Forge itself, for the Docker setup (docker compose --profile forge up -d --build).
+  # Plain "docker compose up" still starts only PostgreSQL, which is what the
+  # development workflow (Forge run from source with "go run") expects.
+  #
+  # "migrate" applies the versioned SQL files in migrations/ once and exits;
+  # Forge starts only after it succeeded. Forge runs in remote mode: your own
+  # workers (built with sdk/workerruntime) claim jobs through port 8081.
+  # Inside the container Forge listens on all interfaces, but every port is
+  # published on 127.0.0.1 only, so nothing is reachable from other machines.
+  migrate:
+    profiles: ["forge"]
+    image: arigaio/atlas:1.3.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - migrate
+      - apply
+      - --dir
+      - file:///migrations
+      - --url
+      - postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    volumes:
+      - ./migrations:/migrations:ro
+    restart: "no"
+
+  forge:
+    profiles: ["forge"]
+    build: .
+    image: forge:local
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      # Composed from the same values as the postgres service; the .env value of
+      # FORGE_DATABASE_URL (which points at 127.0.0.1 for runs from source) is not used.
+      FORGE_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      FORGE_ADDR: 0.0.0.0:8080
+      FORGE_EXECUTION_MODE: remote
+      # The job types your workers handle; Forge rejects any other type.
+      FORGE_REMOTE_JOB_TYPES: ${FORGE_REMOTE_JOB_TYPES:-hello.greet}
+      FORGE_WORKER_ADDR: 0.0.0.0:8081
+      FORGE_API_KEY: ${FORGE_API_KEY:-}
+      FORGE_WORKER_API_KEY: ${FORGE_WORKER_API_KEY:-}
+      FORGE_OPERATOR_ADDR: 0.0.0.0:8082
+      FORGE_OPERATOR_API_KEY: ${FORGE_OPERATOR_API_KEY:-}
+      FORGE_MAX_QUEUED: ${FORGE_MAX_QUEUED:-}
+      FORGE_RETENTION_SUCCEEDED: ${FORGE_RETENTION_SUCCEEDED:-}
+      FORGE_RETENTION_FAILED: ${FORGE_RETENTION_FAILED:-}
+    ports:
+      # FORGE_BIND is the address the ports are published on: 127.0.0.1 (this machine only) unless you
+      # set it, for example to the machine's private IP so your application and workers on OTHER
+      # machines can reach Forge. Do that only inside a private network or security group.
+      - "${FORGE_BIND:-127.0.0.1}:${FORGE_API_PORT:-8080}:8080"
+      - "${FORGE_BIND:-127.0.0.1}:${FORGE_WORKER_PORT:-8081}:8081"
+      - "${FORGE_BIND:-127.0.0.1}:${FORGE_OPERATOR_PORT:-8082}:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # Optional metrics stack (docker compose --profile observability up). It
+  # scrapes Forge's /metrics. By default it reaches the "forge" service of this
+  # file over the compose network (start both profiles). To scrape a Forge that
+  # runs on the host instead, set FORGE_OPERATOR_TARGET=host.docker.internal:8082
+  # and make Forge's operator listener non-loopback (FORGE_OPERATOR_ADDR=0.0.0.0:8082)
+  # on a trusted machine only, because the operator API speaks plain HTTP.
+  # Prometheus history and Grafana's own data live in named volumes, so they
+  # survive "docker compose down" and restarts (only "down -v" deletes them).
+  # Prometheus keeps FORGE_PROMETHEUS_RETENTION of history (default 15d).
+  # Both ports are published on 127.0.0.1 only: reach them from another
+  # machine through an SSH tunnel or AWS Session Manager, never by opening them.
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v2.55.1
+    environment:
+      # Not ":?": Compose interpolates every service, even one in a disabled
+      # profile, so a required variable would break plain "docker compose up".
+      FORGE_OPERATOR_API_KEY: ${FORGE_OPERATOR_API_KEY:-}
+      FORGE_OPERATOR_TARGET: ${FORGE_OPERATOR_TARGET:-forge:8082}
+      FORGE_PROMETHEUS_RETENTION: ${FORGE_PROMETHEUS_RETENTION:-15d}
+      # Only needed to scrape ForgeCart's shop API (see targets/shop.yml).
+      FORGECART_METRICS_KEY: ${FORGECART_METRICS_KEY:-}
+    entrypoint: ["/bin/sh", "-c"]
+    # Write the key to a file (Prometheus reads credentials from files) and fill
+    # in the scrape target; then start Prometheus as usual.
+    command:
+      - |
+        [ -n "$$FORGE_OPERATOR_API_KEY" ] || { echo 'set FORGE_OPERATOR_API_KEY in .env (the key Forge uses)' >&2; exit 1; }
+        printf '%s' "$$FORGE_OPERATOR_API_KEY" > /tmp/operator.key
+        printf '%s' "$${FORGECART_METRICS_KEY:-unset}" > /tmp/shop.key
+        sed "s|TARGET|$$FORGE_OPERATOR_TARGET|" /etc/forge/prometheus.yml > /tmp/prometheus.yml
+        exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=$${FORGE_PROMETHEUS_RETENTION:-15d}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./observability/prometheus.yml:/etc/forge/prometheus.yml:ro
+      # Machines to scrape for node_exporter (CPU, memory, disk), one file the
+      # operator edits; Prometheus re-reads it without a restart.
+      - ./observability/targets:/etc/forge/targets:ro
+      - forge_prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${FORGE_PROMETHEUS_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.3.0
+    depends_on: [prometheus]
+    environment:
+      # Not ":?": see the note on the Prometheus key above. The check below stops
+      # Grafana from starting without a password, so a deployed Grafana never
+      # runs with a default login.
+      FORGE_GRAFANA_ADMIN_PASSWORD: ${FORGE_GRAFANA_ADMIN_PASSWORD:-}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/forge.json
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        [ "$${#FORGE_GRAFANA_ADMIN_PASSWORD}" -ge 12 ] || { echo 'set FORGE_GRAFANA_ADMIN_PASSWORD in .env (at least 12 characters)' >&2; exit 1; }
+        export GF_SECURITY_ADMIN_PASSWORD="$$FORGE_GRAFANA_ADMIN_PASSWORD"
+        exec /run.sh
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - forge_grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${FORGE_GRAFANA_PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  # Survives "docker compose down". Only "down -v" (or removing the volume) deletes it.
+  forge_pgdata:
+  forge_prometheus_data:
+  forge_grafana_data:

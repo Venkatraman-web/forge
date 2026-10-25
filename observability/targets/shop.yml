@@ -1,0 +1,7 @@
+# The ForgeCart metrics listeners (FORGECART_METRICS_ADDR): one entry per shop API
+# instance and one per payment service instance (they share the key). Prometheus re-reads this file about every minute.
+# Example:
+#
+# - targets: ["10.0.0.20:9101", "10.0.0.20:9102"]
+#
+[]

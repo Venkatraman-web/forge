@@ -1,0 +1,6 @@
+{
+  "name": "ramp", "title": "C. Concurrency ramp", "kind": "ramp",
+  "description": "The same workload (200 workflows per stage, 80/12/8 payment mix) at increasing concurrency, each stage on freshly rebuilt databases so stages are comparable. The ramp stops early on an error-rate or latency threshold, a timeout or a generator-saturation warning.",
+  "params": { "seed": 3001, "concurrencies": [1, 2, 5, 10, 20, 40, 80], "stage_workflows": 200, "payment_mix": {"success": 80, "decline": 12, "temp_failure": 8}, "inventory_per_product": 1000000, "drain_timeout_s": 120, "stop_error_rate_pct": 1.0, "stop_p95_ms": 5000 },
+  "objectives": {}
+}

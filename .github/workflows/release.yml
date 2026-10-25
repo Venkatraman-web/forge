@@ -1,0 +1,42 @@
+# Publishes the Forge server image to GitHub's container registry (ghcr.io) when you push a version
+# tag, for example:   git tag v0.1.0 && git push origin v0.1.0
+#
+# The image is built for amd64 and arm64 and pushed as ghcr.io/venkatraman-web/forge:<version> and :latest.
+# It uses the workflow's own token, so no secret has to be created. After the FIRST push, open the
+# package on GitHub (your profile, Packages) and set its visibility to Public, otherwise only you can pull it.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/venkatraman-web/forge   # image names must be lower-case
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

@@ -1,0 +1,6 @@
+{
+  "name": "burst", "title": "D. Burst / spike test", "kind": "burst",
+  "description": "Normal load (concurrency 5), a short burst (concurrency 40), then normal load again. Measures the throughput spike, latency impact, errors, background backlog growth and how long the backlog takes to return to its pre-burst level.",
+  "params": { "seed": 4001, "base_concurrency": 5, "burst_concurrency": 40, "base_seconds": 10, "burst_seconds": 6, "recovery_seconds": 14, "payment_mix": {"success": 80, "decline": 12, "temp_failure": 8}, "inventory_per_product": 1000000, "drain_timeout_s": 120 },
+  "objectives": {}
+}

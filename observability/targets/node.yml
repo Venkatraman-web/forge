@@ -1,0 +1,10 @@
+# Machines running node_exporter (port 9100), one entry per machine. Prometheus
+# re-reads this file about every minute; no restart is needed. Example:
+#
+# - targets: ["10.0.0.11:9100"]
+#   labels: { machine: forge }
+# - targets: ["10.0.0.12:9100"]
+#   labels: { machine: database }
+#
+# The "machine" label becomes the legend on the dashboard's Machines row.
+[]

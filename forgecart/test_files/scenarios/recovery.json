@@ -1,0 +1,7 @@
+{
+  "name": "recovery", "title": "L. Recovery and resilience", "kind": "recovery",
+  "description": "Controlled failures inside the sandbox only: one worker type stopped while jobs queue, all workers paused to build a backlog, the dispatcher restarted while durable outbox events exist, graceful worker shutdown mid-load, a hard-killed worker (lease recovery) and a short pause of the ForgeCart database container. After each, the backlog must drain and every effect must be exactly once.",
+  "fault_injection": true,
+  "params": { "seed": 12001, "workflows": 200, "concurrency": 10, "payment_mix": {"success": 95, "decline": 3, "temp_failure": 2}, "inventory_per_product": 1000000, "drain_timeout_s": 180, "pause_seconds": 6 },
+  "objectives": {}
+}

@@ -1,0 +1,6 @@
+{
+  "name": "baseline", "title": "B. Baseline benchmark", "kind": "baseline",
+  "description": "A modest reproducible workload (300 workflows, concurrency 10, payment mix 80% success / 12% decline / 8% temporary failure) with ample inventory and all five workers (one replica each, 4 slots) active. Repeated three times, each repetition on freshly rebuilt databases, to expose run-to-run variance.",
+  "params": { "seed": 2001, "workflows": 300, "concurrency": 10, "repetitions": 3, "payment_mix": {"success": 80, "decline": 12, "temp_failure": 8}, "inventory_per_product": 1000000, "drain_timeout_s": 120 },
+  "objectives": { "p95_workflow_ms": null, "p99_workflow_ms": null, "min_completed_workflows_per_s": null, "max_drain_s": null }
+}

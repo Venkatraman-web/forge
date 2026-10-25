@@ -1,0 +1,7 @@
+{
+  "name": "worker-scaling", "title": "K. Worker scaling comparison", "kind": "scaling",
+  "description": "The same workload and initial data against different worker capacities (replicas per worker type x concurrency per replica). Throughput of the background pipeline is compared with the smallest configuration; efficiency is the observed gain divided by the capacity gain. Linear scaling is not assumed.",
+  "params": { "seed": 11001, "workflows": 400, "concurrency": 20, "payment_mix": {"success": 95, "decline": 3, "temp_failure": 2}, "inventory_per_product": 1000000, "drain_timeout_s": 240,
+    "scaling_configs": [ {"name": "1x1", "replicas_per_worker_type": 1, "concurrency_per_worker": 1}, {"name": "1x4", "replicas_per_worker_type": 1, "concurrency_per_worker": 4}, {"name": "2x4", "replicas_per_worker_type": 2, "concurrency_per_worker": 4}, {"name": "4x4", "replicas_per_worker_type": 4, "concurrency_per_worker": 4} ] },
+  "objectives": {}
+}

@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+!.env.example
+docs
+forgecart
+observability
+migrations
+*.md
+**/results

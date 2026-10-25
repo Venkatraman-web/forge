@@ -1,0 +1,6 @@
+{
+  "name": "pipeline", "title": "J. Full background pipeline and drain", "kind": "pipeline",
+  "description": "The whole workflow from order creation to completion of every background job, with detailed pipeline measurements: outbox publication latency, Forge job queue wait and execution (from Forge's own timestamps), retries (worker logs), business-effect completion and total drain time. Forge jobs are observed through its public HTTP API only.",
+  "params": { "seed": 10001, "workflows": 400, "concurrency": 10, "payment_mix": {"success": 80, "decline": 12, "temp_failure": 8}, "inventory_per_product": 1000000, "drain_timeout_s": 180 },
+  "objectives": { "max_drain_s": null }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "payment-mix", "title": "H. Payment outcome mix", "kind": "paymix",
+  "description": "Two simulator profiles run in turn (the ForgeCart API is restarted with each): a normal mixed profile and a success-dominant profile. Records the actual outcome distribution and checks that declines and temporary failures create none of the five events while declines release their stock.",
+  "params": { "seed": 8001, "workflows": 300, "concurrency": 10, "inventory_per_product": 1000000, "drain_timeout_s": 120,
+    "profiles": [ {"name": "normal-mixed", "mix": {"success": 70, "decline": 20, "temp_failure": 10}}, {"name": "success-dominant", "mix": {"success": 95, "decline": 3, "temp_failure": 2}} ] },
+  "objectives": {}
+}
