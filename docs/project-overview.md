@@ -4,7 +4,7 @@
 
 Forge is a background-job platform written in Go. An application submits a job (a type and a JSON input); Forge stores it durably in PostgreSQL; **workers that the developer writes and runs themselves** claim jobs of the types they handle, run their own code, and report the result; the application reads the status. Forge never runs customer code. It provides the infrastructure that every application otherwise rebuilds by hand: a durable queue, leases and crash recovery, retries with backoff, timeouts, backpressure, per-job-type policy, authentication between the three kinds of caller, and metrics.
 
-**ForgeCart**, a reference online shop (orders, a simulated payment step, an outbox, and four background workers for inventory, invoicing, fulfillment and notification), runs on top of Forge and is the test bed for everything below.
+**ForgeCart**, a reference online shop (orders, a simulated payment step, an outbox, and background workers for inventory, invoicing, fulfillment and notification), runs on top of Forge and is the test bed for everything below.
 
 ## Shape of the system
 

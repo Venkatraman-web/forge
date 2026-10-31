@@ -54,6 +54,10 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/v1/payments", a.m.instrument("pay", a.pay))
 	mux.HandleFunc("/v1/payments/finals", a.m.instrument("finals", a.finals))
 	mux.HandleFunc("/v1/payments/cancel", a.m.instrument("cancel", a.cancel))
+	// Every other path gets the JSON error shape (the mux's own 404 is plain text), under one fixed metrics label.
+	mux.HandleFunc("/", a.m.instrument("not_found", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "not_found", "The requested path does not exist.")
+	}))
 	return mux
 }
 

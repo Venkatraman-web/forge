@@ -1,0 +1,54 @@
+---
+# The inventory and order workers (two processes each). The units start /opt/cartw/<program>, and /opt/cartw is a link to the
+# worker set directory, so the new binaries go into that directory (replaced atomically). The three older worker binaries in it
+# (invoice, fulfillment, notification) are left alone. /etc/cartw.env (database URLs, keys) is not managed; only its mode.
+- name: Fingerprints of the binaries built here
+  ansible.builtin.stat:
+    path: "{{ artifact_dir }}/{{ item }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: workers_artifacts
+  loop: "{{ worker_programs }}"
+
+- name: All of them were built (run infra/ansible/build.sh first)
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "{{ item.item }} is missing in {{ artifact_dir }}; run build.sh"
+  loop: "{{ workers_artifacts.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: /opt/cartw points at the worker set
+  ansible.builtin.file:
+    src: "{{ workers_set_dir }}"
+    dest: /opt/cartw
+    state: link
+
+- name: The worker binaries are installed in the set
+  ansible.builtin.copy:
+    src: "{{ artifact_dir }}/{{ item }}"
+    dest: "{{ workers_set_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ worker_programs }}"
+  notify: Restart workers
+
+- name: The settings file with the keys is private
+  ansible.builtin.file:
+    path: /etc/cartw.env
+    mode: "0600"
+
+- name: The worker services are enabled at boot and running
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ worker_units }}"
+
+- name: Apply the restart now, before checking
+  ansible.builtin.meta: flush_handlers
+
+- name: Check what is running
+  ansible.builtin.import_tasks: verify.yml

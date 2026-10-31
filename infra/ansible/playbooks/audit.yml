@@ -1,0 +1,65 @@
+---
+# READ-ONLY audit of what is actually deployed. It changes nothing on any machine: every task only reads.
+# It reports, for each machine: free disk, the services of this project and the hash of the binary each one is running,
+# the modes of the settings files (never their contents), how many Neon address pins /etc/hosts has, and the
+# non-loopback listening ports.
+- name: Audit the deployed state
+  hosts: machines
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Free disk space on /
+      ansible.builtin.shell: set -o pipefail; df -h / | tail -1 | awk '{print $2" total, "$4" free, "$5" used"}'
+      args:
+        executable: /bin/bash
+      register: disk
+      changed_when: false
+
+    - name: Services of this project and the hash of the binary each one runs
+      ansible.builtin.shell: |
+        set -o pipefail
+        units=$(systemctl list-units --plain --no-legend --state=running \
+          'forge*' 'forgecart*' 'cw*' 'postgresql@*' 'node_exporter*' 'prometheus*' 2>/dev/null | awk '{print $1}')
+        for u in $units; do
+          pid=$(systemctl show -p MainPID --value "$u")
+          if [ -n "$pid" ] && [ "$pid" != 0 ]; then
+            echo "$u $(sha256sum /proc/$pid/exe 2>/dev/null | cut -c1-12) $(basename "$(readlink /proc/$pid/exe)")"
+          fi
+        done
+      args:
+        executable: /bin/bash
+      register: services
+      changed_when: false
+
+    - name: Modes and owners of the settings files (contents are never read)
+      ansible.builtin.shell: set -o pipefail; stat -c '%a %U %n' /etc/*.env /etc/forge.json 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      register: files
+      changed_when: false
+
+    - name: Neon address pins in /etc/hosts
+      ansible.builtin.shell: set -o pipefail; grep -c 'forge-neon-pin\|forge-neon-pins' /etc/hosts || true
+      args:
+        executable: /bin/bash
+      register: pins
+      changed_when: false
+
+    - name: Listening ports reachable from other machines
+      ansible.builtin.shell: |
+        set -o pipefail
+        ss -ltnH | awk '{print $4}' | grep -v '^127\.\|^\[::1\]' | sed 's/.*://' | sort -un | tr '\n' ' '
+      args:
+        executable: /bin/bash
+      register: ports
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "disk: {{ disk.stdout }}"
+          - "services (unit, binary hash, binary name):"
+          - "{{ services.stdout_lines }}"
+          - "settings files (mode owner path): {{ files.stdout_lines }}"
+          - "neon pins in /etc/hosts: {{ pins.stdout }}"
+          - "listening ports: {{ ports.stdout }}"

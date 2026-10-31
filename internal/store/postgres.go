@@ -45,6 +45,15 @@ var _ Store = (*PostgresStore)(nil)
 // The JSON meaning is the same.
 type PostgresStore struct {
 	db *gorm.DB
+	// typeLimits is the per-type limit on queued jobs (a type missing from it has none). It is set once
+	// at startup, before the store serves any request, and only read afterwards, so it needs no lock.
+	typeLimits map[string]int
+}
+
+// SetTypeLimits sets the per-type limits on queued jobs (docs/decisions/0004, "max_pending"). Call it once,
+// before the store is used; a type with no entry has no limit of its own beyond the global one.
+func (s *PostgresStore) SetTypeLimits(limits map[string]int) {
+	s.typeLimits = limits
 }
 
 // NewPostgresStore wraps an already-initialised GORM handle.
@@ -93,14 +102,14 @@ func (j *jsonb) Scan(src any) error {
 // definition of the table, including its CHECK constraints and index. Change
 // the schema here, then generate a migration with Atlas; never AutoMigrate.
 type JobRecord struct {
-	ID           string    `gorm:"column:id;type:text;primaryKey;check:jobs_id_not_empty,id <> '';index:jobs_created_at_id_idx,priority:2,sort:desc;index:jobs_due_idx,priority:3,where:status = 'queued'"`
-	Type         string    `gorm:"column:type;type:text;not null;check:jobs_type_not_empty,type <> ''"`
+	ID           string    `gorm:"column:id;type:text;primaryKey;check:jobs_id_not_empty,id <> '';index:jobs_created_at_id_idx,priority:2,sort:desc;index:jobs_due_idx,priority:3,where:status = 'queued';index:jobs_due_type_idx,priority:4,where:status = 'queued'"`
+	Type         string    `gorm:"column:type;type:text;not null;check:jobs_type_not_empty,type <> '';index:jobs_due_type_idx,priority:1,where:status = 'queued'"`
 	Status       string    `gorm:"column:status;type:text;not null;check:jobs_status_valid,status IN ('queued', 'running', 'succeeded', 'failed')"`
 	Input        jsonb     `gorm:"column:input;type:jsonb;not null"`
 	Result       jsonb     `gorm:"column:result;type:jsonb"`
 	ErrorCode    *string   `gorm:"column:error_code;type:text;check:jobs_error_pair,(error_code IS NULL) = (error_message IS NULL)"`
 	ErrorMessage *string   `gorm:"column:error_message;type:text"`
-	CreatedAt    time.Time `gorm:"column:created_at;type:timestamptz;not null;autoCreateTime:false;index:jobs_created_at_id_idx,priority:1,sort:desc;index:jobs_due_idx,priority:2,where:status = 'queued';index:jobs_running_idx,where:status = 'running'"` // always set by the app; no GORM magic
+	CreatedAt    time.Time `gorm:"column:created_at;type:timestamptz;not null;autoCreateTime:false;index:jobs_created_at_id_idx,priority:1,sort:desc;index:jobs_due_idx,priority:2,where:status = 'queued';index:jobs_due_type_idx,priority:3,where:status = 'queued';index:jobs_running_idx,where:status = 'running'"` // always set by the app; no GORM magic
 	// StartedAt is when the job FIRST began executing (never reset by a retry).
 	StartedAt *time.Time `gorm:"column:started_at;type:timestamptz"`
 	// GORM allows one check: tag per field, so this table-wide constraint is
@@ -130,7 +139,7 @@ type JobRecord struct {
 	// recovery, and is distinct from Attempt. bigint cannot realistically wrap.
 	ClaimGeneration int64 `gorm:"column:claim_generation;type:bigint;not null;default:0;check:jobs_generation_valid,claim_generation >= 0"`
 	// NextRunAt is the earliest time a queued job may be claimed.
-	NextRunAt time.Time `gorm:"column:next_run_at;type:timestamptz;not null;default:CURRENT_TIMESTAMP;index:jobs_due_idx,priority:1,where:status = 'queued'"`
+	NextRunAt time.Time `gorm:"column:next_run_at;type:timestamptz;not null;default:CURRENT_TIMESTAMP;index:jobs_due_idx,priority:1,where:status = 'queued';index:jobs_due_type_idx,priority:2,where:status = 'queued'"`
 	// LeaseExpiresAt, WorkerID and AttemptStartedAt describe the current
 	// claim. They are deliberately NOT indexed: heartbeats rewrite the lease,
 	// and an indexed column would stop those updates being cheap in-place
@@ -361,8 +370,9 @@ func acquireAdmissionSlot(ctx context.Context) (release func(), err error) {
 
 // submitJobSQL runs the whole admission step in one database call (see the
 // forge_submit_job migration). The result column is 0 inserted, 1 queue full,
-// 2 id already exists, 3 idempotency key replay, 4 idempotency key conflict.
-const submitJobSQL = `SELECT forge_submit_job(@lock, @max, @id, @type, @input, @created, @attempts, @timeout, @key) AS outcome`
+// 2 id already exists, 3 idempotency key replay, 4 idempotency key conflict,
+// 5 the job's type is at its own limit.
+const submitJobSQL = `SELECT forge_submit_job(@lock, @max, @id, @type, @input, @created, @attempts, @timeout, @key, @typemax) AS outcome`
 
 // CreateIfQueueBelow inserts a queued job only if fewer than maxQueued jobs are
 // queued. A plain COUNT followed by INSERT would let concurrent submissions
@@ -416,7 +426,7 @@ func (s *PostgresStore) CreateIfQueueBelow(ctx context.Context, j jobs.Job, maxQ
 	err = s.db.WithContext(ctx).Raw(submitJobSQL,
 		sql.Named("lock", admissionLockKey), sql.Named("max", int64(maxQueued)),
 		sql.Named("id", j.ID), sql.Named("type", j.Type), sql.Named("input", string(rec.Input)),
-		sql.Named("created", rec.CreatedAt), sql.Named("attempts", maxAttempts), sql.Named("timeout", timeoutSeconds), sql.Named("key", key)).
+		sql.Named("created", rec.CreatedAt), sql.Named("attempts", maxAttempts), sql.Named("timeout", timeoutSeconds), sql.Named("key", key), sql.Named("typemax", int64(s.typeLimits[j.Type]))).
 		Scan(&rows).Error
 	if err != nil {
 		return jobs.Job{}, false, fmt.Errorf("insert job %s: %w", j.ID, err)
@@ -429,6 +439,8 @@ func (s *PostgresStore) CreateIfQueueBelow(ctx context.Context, j jobs.Job, maxQ
 		return j, false, nil
 	case 1:
 		return jobs.Job{}, false, ErrQueueFull
+	case 5:
+		return jobs.Job{}, false, &TypeFullError{Type: j.Type, Limit: s.typeLimits[j.Type]}
 	case 2:
 		return jobs.Job{}, false, ErrAlreadyExists
 	case 3:
@@ -448,8 +460,8 @@ func (s *PostgresStore) CreateIfQueueBelow(ctx context.Context, j jobs.Job, maxQ
 }
 
 // submitJobsSQL stores a whole batch in one database call (see the
-// forge_submit_jobs migration). The result is 0 stored, 1 queue full.
-const submitJobsSQL = `SELECT forge_submit_jobs(@lock, @max, CAST(@rows AS jsonb)) AS outcome`
+// forge_submit_jobs migration). The result is 0 stored, 1 queue full, 5 a type is at its own limit.
+const submitJobsSQL = `SELECT forge_submit_jobs(@lock, @max, CAST(@rows AS jsonb), CAST(@limits AS jsonb)) AS outcome`
 
 type batchRow struct {
 	ID             string          `json:"id"`
@@ -489,6 +501,16 @@ func (s *PostgresStore) CreateBatchIfQueueBelow(ctx context.Context, js []jobs.J
 	if err != nil {
 		return fmt.Errorf("insert batch: %w", err)
 	}
+	limits := map[string]int{} // only the types of this batch that have a limit
+	for _, r := range rows {
+		if l := s.typeLimits[r.Type]; l > 0 {
+			limits[r.Type] = l
+		}
+	}
+	limitsJSON, err := json.Marshal(limits)
+	if err != nil {
+		return fmt.Errorf("insert batch: %w", err)
+	}
 
 	release, err := acquireAdmissionSlot(ctx)
 	if err != nil {
@@ -501,7 +523,7 @@ func (s *PostgresStore) CreateBatchIfQueueBelow(ctx context.Context, js []jobs.J
 
 	var out []struct{ Outcome int }
 	err = s.db.WithContext(ctx).Raw(submitJobsSQL,
-		sql.Named("lock", admissionLockKey), sql.Named("max", int64(maxQueued)), sql.Named("rows", string(payload))).
+		sql.Named("lock", admissionLockKey), sql.Named("max", int64(maxQueued)), sql.Named("rows", string(payload)), sql.Named("limits", string(limitsJSON))).
 		Scan(&out).Error
 	var pgErr *pgconn.PgError
 	switch {
@@ -513,6 +535,8 @@ func (s *PostgresStore) CreateBatchIfQueueBelow(ctx context.Context, js []jobs.J
 		return errors.New("insert batch: unexpected result")
 	case out[0].Outcome == 1:
 		return ErrQueueFull
+	case out[0].Outcome == 5:
+		return s.batchTypeFull(ctx, rows, limits)
 	case out[0].Outcome != 0:
 		return fmt.Errorf("insert batch: unexpected outcome %d", out[0].Outcome)
 	}
@@ -621,12 +645,22 @@ func (s *PostgresStore) QueueStats(ctx context.Context) (QueueStats, error) {
 // are written CAST(@x AS type).
 const claimSQL = `
 WITH locked AS (
-  SELECT id, octet_length(input::text) AS size, next_run_at, created_at FROM jobs
-  WHERE status = 'queued' AND next_run_at <= now() AND attempt < max_attempts
-    AND type = ANY(string_to_array(CAST(@types AS text), ','))
-  ORDER BY next_run_at, created_at, id
+  -- One lookup per requested type, each through jobs_due_type_idx, so a claimer
+  -- never walks past queued rows of another type (jobs_due_idx has no type
+  -- column, and with type = ANY(...) the planner cannot use jobs_due_type_idx).
+  -- Each type locks at most one batch of rows; the outer LIMIT keeps the oldest batch.
+  -- (No at-sign in comments here: GORM would read it as a named parameter.)
+  SELECT x.id, x.size, x.next_run_at, x.created_at
+  FROM unnest(string_to_array(CAST(@types AS text), ',')) AS ty(t),
+  LATERAL (
+    SELECT id, octet_length(input::text) AS size, next_run_at, created_at FROM jobs
+    WHERE status = 'queued' AND type = ty.t AND next_run_at <= now() AND attempt < max_attempts
+    ORDER BY next_run_at, created_at, id
+    LIMIT @max
+    FOR UPDATE SKIP LOCKED
+  ) x
+  ORDER BY x.next_run_at, x.created_at, x.id
   LIMIT @max
-  FOR UPDATE SKIP LOCKED
 ), candidate AS (
   -- Cap the total input size of one batch so the answer stays small: a row is
   -- taken while the rows before it add up to less than the cap (so the first row
@@ -1080,4 +1114,28 @@ func (s *PostgresStore) ReapExpired(ctx context.Context, limit int, recoveryBack
 		}
 	}
 	return res, nil
+}
+
+// batchTypeFull names the type that made a batch refuse (result 5 of forge_submit_jobs). The database function
+// answers only "some type is full", so this reads, on the refusal path only, how many jobs of each limited type
+// of the batch are queued. A job queued or finished in between can make the answer differ from the moment of the
+// refusal; if nothing matches, the error is returned without a name.
+func (s *PostgresStore) batchTypeFull(ctx context.Context, rows []batchRow, limits map[string]int) error {
+	per := map[string]int{}
+	for _, r := range rows {
+		per[r.Type]++
+	}
+	for t, n := range per {
+		limit := limits[t]
+		if limit <= 0 {
+			continue
+		}
+		var queued int
+		err := s.db.WithContext(ctx).Raw(
+			`SELECT count(*) FROM (SELECT 1 FROM jobs WHERE status = 'queued' AND type = ? LIMIT ?) q`, t, limit).Scan(&queued).Error
+		if err == nil && queued+n > limit {
+			return &TypeFullError{Type: t, Limit: limit}
+		}
+	}
+	return &TypeFullError{}
 }

@@ -234,6 +234,21 @@ func run() (runErr error) {
 		return fmt.Errorf("create job store: %w", err)
 	}
 
+	// Per-type limits on queued jobs (the config file's max_pending): a limit above the global one would
+	// never be reached, which is a mistake in the file, so it stops the start.
+	if typePolicy != nil {
+		limits := typePolicy.MaxPendingLimits()
+		for name, limit := range limits {
+			if limit > maxQueued {
+				return fmt.Errorf("FORGE_CONFIG_FILE: job type %q: max_pending %d is larger than FORGE_MAX_QUEUED %d", name, limit, maxQueued)
+			}
+		}
+		jobStore.SetTypeLimits(limits)
+		if len(limits) > 0 {
+			log.Printf("forge: per-type queue limits: %v", limits)
+		}
+	}
+
 	// The lease and retry settings are validated here: remote workers are
 	// handed these values, so unsafe ones must not start.
 	if err := worker.ValidateLeaseTiming(leaseDuration, heartbeat, safetyMargin); err != nil {

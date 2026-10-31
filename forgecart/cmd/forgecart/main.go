@@ -1,7 +1,7 @@
 // Command forgecart is the ForgeCart reference application's catalog service.
 //
 //	forgecart        serve the HTTP API
-//	forgecart seed   insert the starter catalog (safe to repeat), then exit
+//	forgecart seed   insert the starter catalog into the inventory database (safe to repeat), then exit
 package main
 
 import (
@@ -18,6 +18,7 @@ import (
 	"github.com/Venkatraman-web/forge/forgecart/internal/catalog"
 	"github.com/Venkatraman-web/forge/forgecart/internal/config"
 	"github.com/Venkatraman-web/forge/forgecart/internal/httpapi"
+	"github.com/Venkatraman-web/forge/forgecart/internal/inventory"
 	"github.com/Venkatraman-web/forge/forgecart/internal/logging"
 	"github.com/Venkatraman-web/forge/forgecart/internal/payments"
 )
@@ -45,13 +46,18 @@ func run(args []string) error {
 		return err
 	}
 	defer db.Close()
+	invDB, err := appdb.Open(ctx, cfg.InventoryDatabaseURL, cfg.InventoryDBMaxConns)
+	if err != nil {
+		return fmt.Errorf("inventory database: %w", err)
+	}
+	defer invDB.Close()
 	log, err := logging.New(os.Stdout)
 	if err != nil {
 		return err
 	}
 
 	if len(args) == 1 {
-		n, err := catalog.Seed(ctx, db)
+		n, err := catalog.Seed(ctx, invDB)
 		if err != nil {
 			return errors.New("seeding failed (has the migration been applied?)")
 		}
@@ -59,8 +65,8 @@ func run(args []string) error {
 		return nil
 	}
 
-	paySvc := payments.NewService(db, payments.NewClient(cfg.PaymentURL, cfg.PaymentKey))
-	api := httpapi.New(db, log, paySvc)
+	paySvc := payments.NewService(db, inventory.NewStore(invDB), payments.NewClient(cfg.PaymentURL, cfg.PaymentKey))
+	api := httpapi.New(db, invDB, log, paySvc)
 	paySvc.OnPaymentCall, paySvc.OnSweep, paySvc.OnExpire = api.ObservePaymentCall, api.ObserveSweep, api.ObserveExpire
 	// The sweeper repairs payments recorded by the payment service but never applied to
 	// their order; see package payments. One goroutine, stopped with the process.
@@ -82,6 +88,16 @@ func run(args []string) error {
 		}()
 	} else {
 		close(expireDone)
+	}
+	// The reaper settles stock reservations the checkout saga left behind (see package payments).
+	reapDone := make(chan struct{})
+	if cfg.ReapInterval > 0 {
+		go func() {
+			defer close(reapDone)
+			paySvc.RunReaper(ctx, cfg.ReapInterval, cfg.ReapAfter, log)
+		}()
+	} else {
+		close(reapDone)
 	}
 	srv := httpapi.NewServer(cfg.Addr, api.Handler())
 	errc := make(chan error, 2)
@@ -109,8 +125,9 @@ func run(args []string) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return errors.New("http shutdown incomplete")
 	}
-	<-sweepDone // the sweeper and the expirer use the database: wait for them before closing it
+	<-sweepDone // the sweeper, the expirer and the reaper use the databases: wait for them before closing them
 	<-expireDone
+	<-reapDone
 	log.Info("forgecart stopped")
 	return nil
 }

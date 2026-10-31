@@ -1,0 +1,32 @@
+---
+- name: Fingerprint of the Forge binary built here
+  ansible.builtin.stat:
+    path: "{{ artifact_dir }}/forge"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: forge_artifact_check
+
+- name: Hash of the binary the service is running
+  ansible.builtin.shell: set -o pipefail; sha256sum /proc/$(systemctl show -p MainPID --value forge)/exe | cut -d' ' -f1
+  args:
+    executable: /bin/bash
+  register: forge_running
+  changed_when: false
+  check_mode: false
+
+- name: It is the one built here
+  ansible.builtin.assert:
+    that: forge_running.stdout == forge_artifact_check.stat.checksum
+    fail_msg: "Forge runs {{ forge_running.stdout[:12] }}, the build here is {{ forge_artifact_check.stat.checksum[:12] }}"
+  when: not ansible_check_mode
+
+- name: Forge answers its health check
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8080/health
+    status_code: 200
+  register: forge_health
+  retries: 10
+  delay: 2
+  until: forge_health.status == 200
+  when: not ansible_check_mode

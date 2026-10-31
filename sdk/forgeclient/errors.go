@@ -69,6 +69,8 @@ type Error struct {
 	Code       string        // server error code such as "queue_full"; may be empty
 	Message    string        // short server message; may be empty
 	RetryAfter time.Duration // from the Retry-After header; zero if absent or invalid
+	JobType    string        // for a queue_full caused by one job type's own limit: that type; otherwise empty
+	Limit      int           // for the same case: that type's limit on queued jobs; otherwise zero
 	Op         string        // "submit", "submit_batch", "get" or "list"
 }
 

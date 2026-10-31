@@ -62,3 +62,11 @@ repository. Docker Hub works equally well for pulling but needs its own account 
 Either way, **customers also need a database**: the image alone is not a complete setup, so ship
 `compose.yaml` and `.env.example` with it (they are in the repository) and keep
 [deploy-on-aws.md](deploy-on-aws.md) as the guide.
+
+## 4. What the workflows check (added 2026-11-01; none of this has run on GitHub yet)
+
+- **`ci.yml`, on every push and pull request:** formatting, `go vet` and build; a **migrations** job (`atlas migrate validate`, and `atlas migrate diff` must produce no new file, so the GORM model and the migration directory agree); an **image** job (the Docker image builds and, started without a database, stops with a message about `FORGE_DATABASE_URL`); an **infra** job (Terraform `fmt` and `validate`, a syntax check of every Ansible playbook, and `ansible-lint`; it touches no machine and needs no AWS credentials), and a **vulnerabilities** job (`govulncheck`) that reports but never fails the build, because a finding in the Go standard library is fixed by a newer Go patch release (the `Dockerfile` builds with `golang:1.26-alpine`, which tracks the latest patch).
+- **`release.yml`, on a `v*` tag:** the same formatting, vet and build checks first; then the multi-architecture image with provenance and an SBOM; then a GitHub release with notes generated from the commits.
+- **`dependabot.yml`:** weekly update proposals for the Go modules, the Actions, the Docker base images and the Terraform provider.
+
+Things a release must say, because they break an upgrade: a database migration that replaces functions (the new Forge needs the new migration, an old Forge cannot run against the migrated database, and a rollback needs the old functions restored), and the minimum Go version for people who use the SDK (`go.mod`).

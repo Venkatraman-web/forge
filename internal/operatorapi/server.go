@@ -159,8 +159,9 @@ type limitsJSON struct {
 	// MaxQueued is FORGE_MAX_QUEUED: the most jobs with status 'queued' that
 	// Forge will hold before refusing submissions (503 queue_full).
 	MaxQueued int `json:"max_queued"`
-	// Scope is "global": one limit shared by all job types. There is no
-	// per-type limit yet, so a queue's max_pending is always null.
+	// Scope is "global": one limit shared by all job types. A
+	// per-type limit is optional (max_pending in the config file); a queue's max_pending is null
+	// when its type has none.
 	Scope string `json:"scope"`
 }
 
@@ -183,7 +184,7 @@ type queueJSON struct {
 	// this type is due. A job waiting out a retry backoff is not due and is not
 	// measured until its time arrives.
 	OldestDueJobAgeSeconds *float64 `json:"oldest_due_job_age_seconds"`
-	// MaxPending is the per-type admission limit; null because none exists yet.
+	// MaxPending is the per-type admission limit from the config file; null when the type has none.
 	MaxPending *int `json:"max_pending"`
 	// QueueFullRejections counts submissions of this type refused with
 	// queue_full by THIS Forge process since it started.
@@ -221,7 +222,13 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since, rejected := s.cfg.Admission.QueueFullRejections()
-	writeJSON(w, http.StatusOK, buildResponse(stats, s.cfg.Admission.MaxQueued(), s.cfg.Admission.ConfiguredTypes(), since, rejected))
+	limits := map[string]int{}
+	for t, e := range s.cfg.Admission.Effective().JobTypes {
+		if e.MaxPending != nil {
+			limits[t] = *e.MaxPending
+		}
+	}
+	writeJSON(w, http.StatusOK, buildResponse(stats, s.cfg.Admission.MaxQueued(), s.cfg.Admission.ConfiguredTypes(), since, rejected, limits))
 }
 
 // handleConfig returns the effective policy per job type. It reads no
@@ -261,7 +268,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 // configured type is listed, with zeros when it has no jobs (known zeros: the
 // snapshot is authoritative). A type that has jobs but is no longer configured
 // is listed too, so nothing is hidden.
-func buildResponse(stats store.QueueStats, maxQueued int, configured []string, since time.Time, rejected map[string]uint64) queuesResponse {
+func buildResponse(stats store.QueueStats, maxQueued int, configured []string, since time.Time, rejected map[string]uint64, limits map[string]int) queuesResponse {
 	byType := map[string]*queueJSON{}
 	get := func(t string) *queueJSON {
 		if q, ok := byType[t]; ok {
@@ -284,6 +291,10 @@ func buildResponse(stats store.QueueStats, maxQueued int, configured []string, s
 	}
 	for t, n := range rejected {
 		get(t).QueueFullRejections = n
+	}
+	for t, l := range limits {
+		limit := l
+		get(t).MaxPending = &limit
 	}
 	resp := queuesResponse{
 		CollectedAt:       stats.CollectedAt,

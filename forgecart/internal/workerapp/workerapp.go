@@ -38,14 +38,14 @@ func run(defaultName, jobType string, newHandler func(bizjob.Databases) workerru
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	db, err := appdb.Open(ctx, cfg.DatabaseURL, appdb.DefaultMaxConns)
+	db, err := appdb.Open(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 	dbs := bizjob.Databases{Shop: db, Results: db}
 	if cfg.ResultsDatabaseURL != "" {
-		if dbs.Results, err = appdb.Open(ctx, cfg.ResultsDatabaseURL, appdb.DefaultMaxConns); err != nil {
+		if dbs.Results, err = appdb.Open(ctx, cfg.ResultsDatabaseURL, cfg.DBMaxConns); err != nil {
 			return fmt.Errorf("results database: %w", err)
 		}
 		defer dbs.Results.Close()
@@ -67,6 +67,9 @@ func run(defaultName, jobType string, newHandler func(bizjob.Databases) workerru
 	if cfg.JobTimeout > 0 {
 		opts = append(opts, workerruntime.WithTimeout(cfg.JobTimeout))
 	}
+	// One reader per process batches the handlers' shop reads; it ends with the process.
+	dbs.Reads = bizjob.NewReader(db, cfg.Concurrency)
+	go dbs.Reads.Run(ctx)
 	handler := newHandler(dbs)
 	if cfg.MetricsAddr != "" {
 		// Its own listener and key: the numbers describe the business, like the shop's.

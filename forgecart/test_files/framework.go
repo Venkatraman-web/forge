@@ -135,7 +135,7 @@ func (e *Env) newProbe() error {
 		e.Probe.Close()
 		e.Probe = nil
 	}
-	p, err := NewProbe(e.SB.AppDBURL(), e.SB.AppDBServerURL(), e.SB.ResultsDBURL(), e.SB.PaymentsDBURL())
+	p, err := NewProbe(e.SB.AppDBURL(), e.SB.AppDBServerURL(), e.SB.ResultsDBURL(), e.SB.PaymentsDBURL(), e.SB.InventoryDBURL())
 	if err != nil {
 		return err
 	}

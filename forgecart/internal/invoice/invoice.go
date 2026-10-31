@@ -57,9 +57,9 @@ var effect = bizjob.Effect[Result]{
 	OtherEventCode:   "order_already_invoiced_by_other_event",
 }
 
-// numberFor derives the invoice number from the order ID, so it is
+// NumberFor derives the invoice number from the order ID, so it is
 // deterministic and unique per order (one invoice per order).
-func numberFor(orderID string) string {
+func NumberFor(orderID string) string {
 	return "INV-" + strings.ToUpper(strings.TrimPrefix(orderID, "ord_"))
 }
 
@@ -78,7 +78,7 @@ func (g *Generator) Generate(ctx context.Context, in Input) (Result, error) {
 		return res, err
 	}
 
-	order, lines, err := bizjob.ReadPaidOrder(ctx, g.dbs.Shop, EventType, in)
+	order, lines, err := g.dbs.ReadPaidOrder(ctx, EventType, in)
 	if err != nil {
 		return Result{}, err
 	}
@@ -91,34 +91,20 @@ func (g *Generator) Generate(ctx context.Context, in Input) (Result, error) {
 		return Result{}, err
 	}
 	id := "inv_" + hex.EncodeToString(rb[:])
-	number := numberFor(in.OrderID)
+	number := NumberFor(in.OrderID)
 
-	tx, err := g.dbs.Results.BeginTx(ctx, nil)
-	if err != nil {
-		return Result{}, err
-	}
-	defer tx.Rollback()
-	if dup, inserted, err := effect.Insert(ctx, g.dbs.Results, tx, in, `
-		INSERT INTO invoices (id, invoice_number, event_id, order_id, payment_attempt_id, customer_email, currency, subtotal_minor, total_minor)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (event_id) DO NOTHING`,
-		id, number, in.EventID, in.OrderID, in.PaymentAttemptID, order.Email, order.Currency, order.Subtotal, order.Total); !inserted {
-		return dup, err
-	}
-
-	// Snapshot the lines in SKU order, in the same transaction.
-	ins, err := tx.ExecContext(ctx, `
+	// One statement writes the invoice and its line snapshot (SKU order): it is
+	// atomic by itself, and its affected-row count is the number of lines.
+	if dup, inserted, err := effect.Write(ctx, g.dbs.Results, in, int64(len(lines)), `
+		WITH h AS (
+			INSERT INTO invoices (id, invoice_number, event_id, order_id, payment_attempt_id, customer_email, currency, subtotal_minor, total_minor)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (event_id) DO NOTHING RETURNING id
+		)
 		INSERT INTO invoice_items (invoice_id, line_number, sku, product_name, quantity, unit_price_minor, currency, line_total_minor)
-		SELECT $1, row_number() OVER (ORDER BY sku), sku, product_name, quantity, unit_price_minor, $3, line_total_minor
-		FROM jsonb_to_recordset($2::jsonb) AS l(sku text, product_name text, quantity int, unit_price_minor bigint, line_total_minor bigint)`,
-		id, lines.JSON(), order.Currency)
-	if err != nil {
-		return Result{}, err
-	}
-	if n, _ := ins.RowsAffected(); int(n) != len(lines) {
-		return Result{}, errors.New("invoice: line snapshot count differs from the verified lines; retry")
-	}
-	if err := tx.Commit(); err != nil {
-		return Result{}, err
+		SELECT h.id, row_number() OVER (ORDER BY l.sku), l.sku, l.product_name, l.quantity, l.unit_price_minor, $7, l.line_total_minor
+		FROM h, jsonb_to_recordset($10::jsonb) AS l(sku text, product_name text, quantity int, unit_price_minor bigint, line_total_minor bigint)`,
+		id, number, in.EventID, in.OrderID, in.PaymentAttemptID, order.Email, order.Currency, order.Subtotal, order.Total, lines.JSON()); !inserted {
+		return dup, err
 	}
 	return Result{InvoiceID: id, InvoiceNumber: number, OrderID: in.OrderID}, nil
 }

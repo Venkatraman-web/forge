@@ -14,8 +14,8 @@ it handles, runs its own code, and reports success or failure. The application c
 Forge never runs customer code itself.
 
 **ForgeCart** is an example customer: an online shop. It exists to prove Forge works under a realistic
-workload. It has a web service for orders, a separate payment service, a dispatcher, and four workers
-(inventory, invoice, fulfilment, notification). Forge is the reusable product; ForgeCart is the test bed.
+workload. It has a web service for orders, a separate payment service, a dispatcher, and background
+workers (an inventory check and one job that creates the invoice, prepares fulfilment and records the notification). Forge is the reusable product; ForgeCart is the test bed.
 
 Why a shop? A shop has all the hard parts of real systems: money (must not be charged twice), stock
 (must not be oversold), and work that happens *after* the customer is told "paid" (invoice, shipping,
@@ -118,8 +118,7 @@ Forge speaks plain HTTP (no TLS): it is meant for a private network, so the keys
 
 Two customers ordering the last keyboard at once: the second waits on the row lock, then sees the new
 stock and is told "insufficient inventory". The database also refuses negative stock by itself
-(`CHECK inventory_quantity >= 0`), a third independent layer. Tested by `TestCheckoutNeverOversells`
-(40 concurrent shoppers) and by integrity checks after every load run.
+(`CHECK inventory_quantity >= 0`), a third independent layer. Checked by the integrity checks after every load run and by a many-buyers-for-one-product load test (there are no automated tests).
 A product that is *very* popular makes all its buyers queue on one row lock; measured (200 shoppers, one product): about 300 orders per second instead of about 495, and exactly the available stock sold when it ran out (benchmarks section 30).
 
 ### 4.2 Payment is a separate service
@@ -159,10 +158,10 @@ and lose the batching the dispatcher needs; adding keys to batches would be a ch
 (the endpoint plus a new database function). Since the duplicate is harmless, that change was judged not
 worth its risk.
 
-### 4.4 The four workers
-For each paid order four jobs run: an inventory check (`inventory.reconcile`, a read-only check of the
-order's stock figures, a demonstration rather than real warehouse work), create an invoice, prepare
-fulfilment, and send a notification (recorded in a table; no email is actually sent). They are built on the SDK;
+### 4.4 The background workers
+Since 2026-10-30 two jobs run for each paid order: an inventory check (`inventory.reconcile`, a read-only check of the
+order's stock figures, a demonstration rather than real warehouse work) and `order.process`, which in one job creates the invoice, prepares
+fulfilment and records the notification (recorded in a table; no email is actually sent). Before that they were four separate jobs; the figures below marked "four" were measured with that build. They are built on the SDK;
 their results go to a separate database (raised end-to-end throughput about 12 to 18%, section 18).
 They read the order from the shop database by order ID and trust the database, not the job payload.
 
@@ -197,10 +196,11 @@ step and a synthetic shopper load that waits for each reply (closed loop).
 
 | Measure | Result | Where |
 |---|---|---|
-| Orders finished per second, including all four background jobs, 200 concurrent shoppers | about 546 (range 538 to 551, five runs) | section 28 |
+| Orders finished per second, including all four background jobs (earlier build), 200 concurrent shoppers | about 546 (range 538 to 551, five runs) | section 28 |
 | Same, 500 concurrent shoppers | about 581 (range 572 to 598, five runs) | section 28 |
 | Paid orders per second | about 90% of the above | section 28 |
 | 60 minutes at 100 shoppers | 1,302,376 orders, 0 failed, 4,688,816 background jobs, all 25 integrity checks passed; throughput drifted from about 396 to about 350 per second in the first half hour and then held | section 28 |
+| Current build (two jobs, saga checkout, databases on Neon free projects), 1,000 shoppers | about 1,470 orders/s checkout; about 1,000 orders/s end to end (957 to 1,039, four runs, one session) | section 71 |
 | Where the time goes | The shop database is at 93 to 100% CPU at these rates; about 3.6 ms of database time per order. The results database is also near its limit | sections 28, 29 |
 | Forge alone (no ForgeCart) | about 1,200 jobs/s sustained with batch submission and workers claiming; about 2,000 completions/s measured on smaller machines | sections 3, 8 |
 
@@ -223,7 +223,7 @@ from the repository on 2026-10-25 before publishing and is kept in the author's 
 
 - **Not production-ready.** It has not been run with real users, real money or real Razorpay traffic at scale.
 - **Security:** keys are role-level (rotatable and revocable, but not per customer); isolation is by deployment (one Forge per team), not inside one Forge; **no TLS** (plain HTTP everywhere, including ForgeCart's services); no rate limiting. Keep it on a private network, or put a TLS proxy in front.
-- **Capacity:** about 550 to 580 orders per second on this hardware, limited by the databases. More needs bigger machines (not free) or splitting data across databases (a large redesign, not built).
+- **Capacity:** about 550 to 580 orders per second with the databases on 2-vCPU EC2 machines, about 1,000 with Neon free-tier databases; both limited by the databases, and Neon's free quotas (storage, monthly transfer) ran out several times during testing. More needs bigger machines (not free) or splitting data across databases (a large redesign, not built).
 - **One Forge process** has been validated; several against one database have not.
 - **One-hour soak,** not days. Throughput fell about 13% as the tables grew; the cause is probably table size but was not proven.
 - **Load shape:** closed-loop shoppers show steady operation, not behaviour when more arrives than the system can take.

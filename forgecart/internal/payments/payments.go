@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/Venkatraman-web/forge/forgecart/internal/inventory"
 	"github.com/Venkatraman-web/forge/forgecart/internal/orders"
 	"github.com/Venkatraman-web/forge/forgecart/internal/outbox"
 )
@@ -41,6 +42,7 @@ type Result struct {
 
 type Service struct {
 	db     *sql.DB
+	inv    *inventory.Store // gives stock back when an order is declined, expired or cancelled
 	client *Client
 	// OnPaymentCall and OnSweep are optional observers (metrics); set them before the
 	// service is used.
@@ -68,7 +70,9 @@ func callResult(err error) string {
 	return "rejected"
 }
 
-func NewService(db *sql.DB, client *Client) *Service { return &Service{db: db, client: client} }
+func NewService(db *sql.DB, inv *inventory.Store, client *Client) *Service {
+	return &Service{db: db, inv: inv, client: client}
+}
 
 func notPayable(status string) *orders.Error {
 	return &orders.Error{Kind: orders.KindConflict, Code: "order_not_payable", Message: "The order is not awaiting payment (status: " + status + ")."}
@@ -140,28 +144,29 @@ func (s *Service) Pay(ctx context.Context, orderID, key string) (Result, error) 
 	return res, nil
 }
 
-// applyPaid marks the order paid and writes its one outbox event in the same
-// transaction: either the order is paid and the event exists, or neither is
-// committed. Stock was already deducted at checkout; it is only marked committed.
+// applyPaid marks the order paid and writes its one outbox event in ONE statement,
+// which is atomic by itself: either the order is paid and the event exists, or
+// neither is committed. The event is inserted only for the row the update matched.
+// Stock was already deducted at checkout; it is only marked committed.
 func (s *Service) applyPaid(ctx context.Context, orderID, attemptID string) (applied bool, err error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	ev, err := outbox.NewPaidOrderEvent(orderID, attemptID)
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `
-		UPDATE orders SET status = 'paid', inventory_status = 'committed', paid_attempt_id = $2, updated_at = now()
-		WHERE id = $1 AND status = 'pending_payment' AND inventory_status = 'reserved'`, orderID, attemptID)
+	res, err := s.db.ExecContext(ctx, `
+		WITH paid AS (
+			UPDATE orders SET status = 'paid', inventory_status = 'committed', paid_attempt_id = $2, updated_at = now()
+			WHERE id = $1 AND status = 'pending_payment' AND inventory_status = 'reserved'
+			RETURNING id
+		)
+		INSERT INTO outbox_events (id, order_id, event_type, payload)
+		SELECT $3, paid.id, $4, $5::jsonb FROM paid`, orderID, attemptID, ev.ID, ev.Type, ev.Payload)
 	if err != nil {
 		return false, err
 	}
 	if n, _ := res.RowsAffected(); n == 1 {
-		if err := outbox.InsertPaidOrderEvent(ctx, tx, orderID, attemptID); err != nil {
-			return false, err
-		}
-		return true, tx.Commit()
+		return true, nil
 	}
-	tx.Rollback()
 	// Not pending: fine if an earlier call (a replay, or a concurrent request with
 	// the same key) already applied this very attempt.
 	var status string
@@ -175,64 +180,39 @@ func (s *Service) applyPaid(ctx context.Context, orderID, attemptID string) (app
 	return false, errOrderConflict
 }
 
-// applyDeclined moves the order to payment_failed and returns its reserved
-// stock, in one transaction. The state change only matches once, so the stock is
-// returned exactly once.
+// applyDeclined moves the order to payment_failed and gives its reserved stock back.
 func (s *Service) applyDeclined(ctx context.Context, orderID string) (applied bool, err error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `
-		UPDATE orders SET status = 'payment_failed', inventory_status = 'released', updated_at = now()
-		WHERE id = $1 AND status = 'pending_payment' AND inventory_status = 'reserved'`, orderID)
-	if err != nil {
-		return false, err
-	}
-	if n, _ := res.RowsAffected(); n == 1 {
-		if err := releaseStock(ctx, tx, orderID); err != nil {
-			return false, err
-		}
-		return true, tx.Commit()
-	}
-	tx.Rollback()
-	var status string
-	if err := s.db.QueryRowContext(ctx, `SELECT status FROM orders WHERE id = $1`, orderID).Scan(&status); err != nil {
-		return false, err
-	}
-	if status == "payment_failed" {
-		return false, nil
-	}
-	return false, errOrderConflict
+	return s.applyReleased(ctx, orderID, "payment_failed")
 }
 
-// applyCancelled moves an expired, unpaid order to cancelled and returns its reserved stock,
-// in one transaction (like applyDeclined; the state change only matches once).
+// applyCancelled moves an expired, unpaid order to cancelled and gives its reserved stock back.
 func (s *Service) applyCancelled(ctx context.Context, orderID string) (applied bool, err error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `
-		UPDATE orders SET status = 'cancelled', inventory_status = 'released', updated_at = now()
-		WHERE id = $1 AND status = 'pending_payment' AND inventory_status = 'reserved'`, orderID)
+	return s.applyReleased(ctx, orderID, "cancelled")
+}
+
+// applyReleased moves a pending order to status (payment_failed or cancelled) and then releases its
+// reservation in the inventory database. The state change comes first and only matches once; the
+// release is idempotent. They are two transactions in two databases (see
+// docs/decisions/0005-inventory-service-and-checkout-saga.md): if the release fails, the order is
+// already marked and the reaper gives the stock back; and a repeat of this call for an order already in
+// the target state tries the release again, so a retry or the sweeper completes it.
+func (s *Service) applyReleased(ctx context.Context, orderID, status string) (applied bool, err error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE orders SET status = $2, inventory_status = 'released', updated_at = now()
+		WHERE id = $1 AND status = 'pending_payment' AND inventory_status = 'reserved'`, orderID, status)
 	if err != nil {
 		return false, err
 	}
 	if n, _ := res.RowsAffected(); n == 1 {
-		if err := releaseStock(ctx, tx, orderID); err != nil {
-			return false, err
-		}
-		return true, tx.Commit()
+		_ = s.inv.Release(ctx, orderID)
+		return true, nil
 	}
-	tx.Rollback()
-	var status string
-	if err := s.db.QueryRowContext(ctx, `SELECT status FROM orders WHERE id = $1`, orderID).Scan(&status); err != nil {
+	var current string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM orders WHERE id = $1`, orderID).Scan(&current); err != nil {
 		return false, err
 	}
-	if status == "cancelled" {
+	if current == status {
+		_ = s.inv.Release(ctx, orderID)
 		return false, nil
 	}
 	return false, errOrderConflict
@@ -250,45 +230,4 @@ func (s *Service) applyFinal(ctx context.Context, orderID, attemptID, outcome st
 		return s.applyDeclined(ctx, orderID)
 	}
 	return false, nil
-}
-
-// releaseStock returns the order's reserved quantities to inventory. It runs
-// in the same transaction as the state change that moved the order from
-// reserved to released. Products are updated in SKU order, the same order
-// checkout locks them in, to avoid lock-order deadlocks.
-func releaseStock(ctx context.Context, tx *sql.Tx, orderID string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT product_id, quantity FROM order_items WHERE order_id = $1 ORDER BY sku`, orderID)
-	if err != nil {
-		return err
-	}
-	type line struct {
-		productID int64
-		qty       int
-	}
-	var lines []line
-	for rows.Next() {
-		var l line
-		if err := rows.Scan(&l.productID, &l.qty); err != nil {
-			rows.Close()
-			return err
-		}
-		lines = append(lines, l)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	rows.Close()
-	if len(lines) == 0 {
-		return errors.New("order has no items to release")
-	}
-	for _, l := range lines {
-		res, err := tx.ExecContext(ctx, `UPDATE products SET inventory_quantity = inventory_quantity + $2, updated_at = now() WHERE id = $1`, l.productID, l.qty)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n != 1 {
-			return errors.New("product row missing during stock release")
-		}
-	}
-	return nil
 }

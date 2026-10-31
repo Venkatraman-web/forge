@@ -1,0 +1,38 @@
+---
+# Where the binaries built by build.sh are, and where things live on the machines.
+artifact_dir: "{{ playbook_dir }}/../build"
+forge_dir: /opt/forge
+cart_dir: /opt/cart
+workers_set_dir: /opt/cartw-f      # /opt/cartw points here: the inventory and order workers (and the three older ones)
+worker_units:
+  - cw@inventory
+  - cw@order
+  - cw2@inventory
+  - cw2@order
+# release_label has no default on purpose: a deploy must say what it deploys, for example -e release_label=v0.2.0
+shop_programs:
+  - forgecart
+  - forgecart-payments
+  - forgecart-dispatcher
+shop_services:
+  - forgecart
+  - forgecart-payments
+  - forgecart-dispatcher
+  - forgecart-dispatcher2
+  - forgecart-dispatcher3
+  - forgecart-dispatcher4
+shop_service_programs:
+  - { service: forgecart, program: forgecart }
+  - { service: forgecart-payments, program: forgecart-payments }
+  - { service: forgecart-dispatcher, program: forgecart-dispatcher }
+  - { service: forgecart-dispatcher2, program: forgecart-dispatcher }
+  - { service: forgecart-dispatcher3, program: forgecart-dispatcher }
+  - { service: forgecart-dispatcher4, program: forgecart-dispatcher }
+worker_programs:
+  - forgecart-inventory-worker
+  - forgecart-order-worker
+worker_service_programs:
+  - { service: cw@inventory, program: forgecart-inventory-worker }
+  - { service: cw2@inventory, program: forgecart-inventory-worker }
+  - { service: cw@order, program: forgecart-order-worker }
+  - { service: cw2@order, program: forgecart-order-worker }

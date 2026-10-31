@@ -354,12 +354,13 @@ type Probe struct {
 	db   *sql.DB
 	res  *sql.DB // the workers' result tables: the same pool as db unless the deployment has a results database
 	pay  *sql.DB // the payment service's database
+	inv  *sql.DB // the inventory database: stock and reservations
 	conn *sql.DB // server-level connection for pg_stat_activity
 }
 
 // NewProbe opens the read-only connections. resultsURL is empty when the workers'
 // result tables are in the ForgeCart database.
-func NewProbe(appURL, appServerURL, resultsURL, paymentsURL string) (*Probe, error) {
+func NewProbe(appURL, appServerURL, resultsURL, paymentsURL, inventoryURL string) (*Probe, error) {
 	db, err := sql.Open("pgx", appURL)
 	if err != nil {
 		return nil, err
@@ -377,12 +378,17 @@ func NewProbe(appURL, appServerURL, resultsURL, paymentsURL string) (*Probe, err
 		return nil, err
 	}
 	pay.SetMaxOpenConns(2)
+	inv, err := sql.Open("pgx", inventoryURL)
+	if err != nil {
+		return nil, err
+	}
+	inv.SetMaxOpenConns(2)
 	srv, err := sql.Open("pgx", appServerURL)
 	if err != nil {
 		return nil, err
 	}
 	srv.SetMaxOpenConns(1)
-	return &Probe{db: db, res: res, pay: pay, conn: srv}, nil
+	return &Probe{db: db, res: res, pay: pay, inv: inv, conn: srv}, nil
 }
 
 func (p *Probe) Close() {
@@ -391,6 +397,7 @@ func (p *Probe) Close() {
 		p.res.Close()
 	}
 	p.pay.Close()
+	p.inv.Close()
 	p.conn.Close()
 }
 
@@ -487,6 +494,9 @@ func (p *Probe) samples(ctx context.Context, q string, args ...any) []int64 {
 	return out
 }
 
+// effectOrder is the order in which the effects are checked.
+var effectOrder = []string{"inventory", "invoice", "notification", "fulfillment"}
+
 var effectTables = map[string]struct{ table string }{
 	"inventory":    {"inventory_reconciliations"},
 	"invoice":      {"invoices"},
@@ -551,9 +561,98 @@ func (p *Probe) Verify(ctx context.Context, initialStock int, drained bool) []Ch
 		violations(name, n, err)
 	}
 	one := func(name, query string, args ...any) { on(p.db, name, query, args...) }
-	one("stock ledger: initial stock = current stock + units held by reserved/committed orders, for every product",
-		`SELECT count(*) FROM products p WHERE p.inventory_quantity + COALESCE((SELECT sum(oi.quantity) FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE oi.product_id=p.id AND o.inventory_status IN ('reserved','committed')),0) <> $1`, initialStock)
-	one("no product has negative stock", `SELECT count(*) FROM products WHERE inventory_quantity < 0`)
+	// The stock lives in the inventory database and the orders in the shop's: compare in code.
+	stockOf, heldBy := map[int64]int{}, map[int64]int{}
+	var stockErr error
+	if rows, err := p.inv.QueryContext(ctx, `SELECT id, inventory_quantity FROM products`); err != nil {
+		stockErr = err
+	} else {
+		for rows.Next() {
+			var id int64
+			var n int
+			if err := rows.Scan(&id, &n); err != nil {
+				stockErr = err
+				break
+			}
+			stockOf[id] = n
+		}
+		if stockErr == nil {
+			stockErr = rows.Err()
+		}
+		rows.Close()
+	}
+	if rows, err := p.db.QueryContext(ctx, `SELECT oi.product_id, sum(oi.quantity) FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.inventory_status IN ('reserved','committed') GROUP BY 1`); err != nil {
+		stockErr = err
+	} else {
+		for rows.Next() {
+			var id int64
+			var n int
+			if err := rows.Scan(&id, &n); err != nil {
+				stockErr = err
+				break
+			}
+			heldBy[id] = n
+		}
+		if stockErr == nil {
+			stockErr = rows.Err()
+		}
+		rows.Close()
+	}
+	ledgerBad := 0
+	for id, n := range stockOf {
+		if n+heldBy[id] != initialStock {
+			ledgerBad++
+		}
+	}
+	violations("stock ledger: initial stock = current stock + units held by reserved/committed orders, for every product", ledgerBad, stockErr)
+	on(p.inv, "no product has negative stock", `SELECT count(*) FROM products WHERE inventory_quantity < 0`)
+	// The checkout saga keeps a reservation per order that holds stock: compare the two databases in code.
+	orderState, reserved := map[string]string{}, map[string]string{}
+	var resErr error
+	if rows, err := p.db.QueryContext(ctx, `SELECT id, status FROM orders`); err != nil {
+		resErr = err
+	} else {
+		for rows.Next() {
+			var id, st string
+			if err := rows.Scan(&id, &st); err != nil {
+				resErr = err
+				break
+			}
+			orderState[id] = st
+		}
+		if resErr == nil {
+			resErr = rows.Err()
+		}
+		rows.Close()
+	}
+	if rows, err := p.inv.QueryContext(ctx, `SELECT order_id, status FROM stock_reservations WHERE status IN ('reserved','committed')`); err != nil {
+		resErr = err
+	} else {
+		for rows.Next() {
+			var id, st string
+			if err := rows.Scan(&id, &st); err != nil {
+				resErr = err
+				break
+			}
+			reserved[id] = st
+		}
+		if resErr == nil {
+			resErr = rows.Err()
+		}
+		rows.Close()
+	}
+	resBad := 0
+	for id, st := range orderState {
+		if (st == "pending_payment" || st == "paid") && reserved[id] == "" {
+			resBad++ // an order that holds stock has no reservation
+		}
+	}
+	for id := range reserved {
+		if st, ok := orderState[id]; !ok || st == "payment_failed" || st == "cancelled" {
+			resBad++ // stock held for an order that is missing, declined or cancelled
+		}
+	}
+	violations("stock reservations match the orders: every order that holds stock has its reservation, and none is held for a missing, declined or cancelled order", resBad, resErr)
 	one("every paid order has exactly one outbox event (order.paid, which the dispatcher turns into its background jobs)",
 		`SELECT count(*) FROM orders o WHERE o.status='paid' AND (SELECT count(*) FROM outbox_events e WHERE e.order_id=o.id)<>1`)
 	one("no outbox event exists for an order that is not paid (declines and temporary failures create none)",
@@ -647,9 +746,11 @@ func (p *Probe) Verify(ctx context.Context, initialStock int, drained bool) []Ch
 	// The workers' results may be in another database than the orders, so the checks
 	// that relate them compare sets here instead of joining in SQL.
 	paid, paidErr := ids(ctx, p.db, `SELECT id FROM orders WHERE status='paid'`)
-	for _, w := range WorkerTypes {
-		t := effectTables[w.Short]
-		on(p.res, fmt.Sprintf("%s: never more than one effect per order or per event (no duplicate business effect)", w.Short),
+	// One check set per EFFECT (each has its own table), not per worker: since 2026-10-30 one worker
+	// (order.process) writes three of them.
+	for _, short := range effectOrder {
+		t := effectTables[short]
+		on(p.res, fmt.Sprintf("%s: never more than one effect per order or per event (no duplicate business effect)", short),
 			fmt.Sprintf(`SELECT (SELECT count(*) - count(DISTINCT order_id) FROM %s) + (SELECT count(*) - count(DISTINCT event_id) FROM %s)`, t.table, t.table))
 		withEffect, err := ids(ctx, p.res, fmt.Sprintf(`SELECT order_id FROM %s`, t.table))
 		if err == nil {
@@ -661,7 +762,7 @@ func (p *Probe) Verify(ctx context.Context, initialStock int, drained bool) []Ch
 				notPaid++
 			}
 		}
-		violations(fmt.Sprintf("%s: no effect for an order that is not paid", w.Short), notPaid, err)
+		violations(fmt.Sprintf("%s: no effect for an order that is not paid", short), notPaid, err)
 		if drained {
 			missing := 0
 			for id := range paid {
@@ -669,7 +770,7 @@ func (p *Probe) Verify(ctx context.Context, initialStock int, drained bool) []Ch
 					missing++
 				}
 			}
-			violations(fmt.Sprintf("%s: every paid order has its effect (pipeline drained)", w.Short), missing, err)
+			violations(fmt.Sprintf("%s: every paid order has its effect (pipeline drained)", short), missing, err)
 		}
 	}
 	on(p.res, "invoices: line snapshots exist and sum to the invoice subtotal",
@@ -798,7 +899,7 @@ func (p *Probe) Span(ctx context.Context, effects int) *PipelineSpan {
 // StockByProduct returns the current stock per SKU.
 func (p *Probe) StockByProduct(ctx context.Context) map[string]int {
 	out := map[string]int{}
-	rows, err := p.db.QueryContext(ctx, `SELECT sku, inventory_quantity FROM products`)
+	rows, err := p.inv.QueryContext(ctx, `SELECT sku, inventory_quantity FROM products`)
 	if err != nil {
 		return out
 	}

@@ -1,0 +1,31 @@
+---
+- name: Fingerprints of the binaries built here
+  ansible.builtin.stat:
+    path: "{{ artifact_dir }}/{{ item.program }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: workers_artifacts_check
+  loop: "{{ worker_service_programs }}"
+  loop_control:
+    label: "{{ item.service }}"
+
+- name: Hash of the binary each worker is running
+  ansible.builtin.shell: set -o pipefail; sha256sum /proc/$(systemctl show -p MainPID --value {{ item.service }})/exe | cut -d' ' -f1
+  args:
+    executable: /bin/bash
+  register: workers_running
+  changed_when: false
+  check_mode: false
+  loop: "{{ worker_service_programs }}"
+  loop_control:
+    label: "{{ item.service }}"
+
+- name: Each one is the build made here
+  ansible.builtin.assert:
+    that: item.0.stdout == item.1.stat.checksum
+    fail_msg: "{{ item.0.item.service }} runs {{ item.0.stdout[:12] }}, the build here is {{ item.1.stat.checksum[:12] }}"
+  loop: "{{ workers_running.results | zip(workers_artifacts_check.results) | list }}"
+  loop_control:
+    label: "{{ item.0.item.service }}"
+  when: not ansible_check_mode

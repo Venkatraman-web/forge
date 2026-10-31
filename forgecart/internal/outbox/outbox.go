@@ -1,15 +1,11 @@
-// Package outbox writes ForgeCart's transactional outbox rows. It only
-// inserts; reading, claiming and publishing events belongs to the dispatcher
-// task, which has not been written.
+// Package outbox holds ForgeCart's transactional outbox: the row a paid order
+// writes (this file) and the dispatcher's claims on pending rows (claims.go).
 package outbox
 
 import (
-	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 )
 
 // OrderPaid is the one event a paid order writes. The dispatcher turns it into
@@ -17,12 +13,13 @@ import (
 const OrderPaid = "order.paid"
 
 // JobTypes are the background jobs a paid order needs, in the order the
-// dispatcher submits them. They are the Forge job types of the four workers.
+// dispatcher submits them. They are the Forge job types of the two workers:
+// the inventory reconciliation, and "order.process", which records the invoice, the
+// fulfillment plan and the confirmation notification of the order in one job
+// (before 2026-10-30 each of those three was a job of its own).
 var JobTypes = []string{
 	"inventory.reconcile",
-	"fulfillment.prepare",
-	"invoice.generate",
-	"notification.send",
+	"order.process",
 }
 
 // payload is deliberately tiny and holds no customer data, prices or secrets:
@@ -32,28 +29,25 @@ type payload struct {
 	PaymentAttemptID string `json:"payment_attempt_id"`
 }
 
-// InsertPaidOrderEvent inserts the order's one pending event inside the caller's
-// transaction, so it commits or rolls back together with the payment. The insert
-// must create exactly one row; a duplicate (order, type) violates the unique
-// constraint and fails the transaction.
-func InsertPaidOrderEvent(ctx context.Context, tx *sql.Tx, orderID, paymentAttemptID string) error {
+// PaidOrderEvent is the outbox row a paid order writes.
+type PaidOrderEvent struct {
+	ID      string
+	Type    string
+	Payload string // JSON
+}
+
+// NewPaidOrderEvent makes the order's one event. The caller inserts it in the same
+// statement that marks the order paid, so the order is paid and the event exists, or
+// neither is committed; a duplicate (order, type) violates the unique constraint and
+// fails that statement.
+func NewPaidOrderEvent(orderID, paymentAttemptID string) (PaidOrderEvent, error) {
 	body, err := json.Marshal(payload{OrderID: orderID, PaymentAttemptID: paymentAttemptID})
 	if err != nil {
-		return err
+		return PaidOrderEvent{}, err
 	}
 	var rb [12]byte
 	if _, err := rand.Read(rb[:]); err != nil {
-		return err
+		return PaidOrderEvent{}, err
 	}
-	res, err := tx.ExecContext(ctx, `
-		INSERT INTO outbox_events (id, order_id, event_type, payload)
-		VALUES ($1, $2, $3, $4::jsonb)`,
-		"evt_"+hex.EncodeToString(rb[:]), orderID, OrderPaid, string(body))
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return fmt.Errorf("outbox insert affected %d rows", n)
-	}
-	return nil
+	return PaidOrderEvent{ID: "evt_" + hex.EncodeToString(rb[:]), Type: OrderPaid, Payload: string(body)}, nil
 }

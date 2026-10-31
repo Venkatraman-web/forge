@@ -6,7 +6,9 @@ package bizjob
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"regexp"
@@ -27,7 +29,30 @@ var (
 // workers stop competing for one machine. The read and the write are therefore
 // two separate steps, not one transaction: a redelivery is made safe by
 // UNIQUE(event_id) on the result row, not by a lock held across both.
-type Databases struct{ Shop, Results *sql.DB }
+type Databases struct {
+	Shop, Results *sql.DB
+	// Reads, when set, batches the workers' shop reads (see Reader); when nil each
+	// job reads on its own. The worker process starts it (Reader.Run).
+	Reads *Reader
+}
+
+// ReadPaidOrder verifies the event and reads the order and its lines from the shop
+// database, through the Reader when there is one.
+func (d Databases) ReadPaidOrder(ctx context.Context, eventType string, in Input) (PaidOrder, Lines, error) {
+	if d.Reads != nil {
+		return d.Reads.read(ctx, eventType, in, true)
+	}
+	return ReadPaidOrder(ctx, d.Shop, eventType, in)
+}
+
+// VerifyPaidOrder is the same without the lines.
+func (d Databases) VerifyPaidOrder(ctx context.Context, eventType string, in Input) (PaidOrder, error) {
+	if d.Reads != nil {
+		o, _, err := d.Reads.read(ctx, eventType, in, false)
+		return o, err
+	}
+	return VerifyPaidOrder(ctx, d.Shop, eventType, in)
+}
 
 // Input is the job input the dispatcher submits for every event type.
 type Input struct {
@@ -81,4 +106,14 @@ func Handler[R any](run func(context.Context, Input) (R, error)) workerruntime.H
 		}
 		return res, nil
 	}
+}
+
+// NewID returns prefix followed by 24 random hexadecimal characters, the shape of
+// every ForgeCart identifier ("inv_", "ful_", "ntf_", ...).
+func NewID(prefix string) (string, error) {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return prefix + hex.EncodeToString(b[:]), nil
 }

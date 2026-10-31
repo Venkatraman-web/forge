@@ -1,0 +1,106 @@
+---
+# Brings the deployed machines to the state the benchmarks and chaos tests assumed, and keeps them there.
+# Found by playbooks/audit.yml: after a restart only some services came back, and the logs filled the disks.
+#
+# Run it first as a dry run that only reports what it would change:
+#   ansible-playbook playbooks/fix-drift.yml --check --diff
+# Then for real:
+#   ansible-playbook playbooks/fix-drift.yml
+#
+# Two groups of tasks are OFF unless asked for, because they remove or stop things (see the tags at the bottom):
+#   --tags cleanup-logs       truncates the huge syslog files
+#   --tags stop-extra-postgres  stops and disables the unused PostgreSQL on the Forge application machine
+
+- name: The shop machine runs the shop, the payment service and all four dispatchers, and starts them at boot
+  hosts: shop
+  become: true
+  tasks:
+    - name: Service enabled at boot and running
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - forgecart
+        - forgecart-payments
+        - forgecart-dispatcher
+        - forgecart-dispatcher2
+        - forgecart-dispatcher3
+        - forgecart-dispatcher4
+
+- name: The workers machine runs the inventory and order workers (two processes each), and starts them at boot
+  hosts: workers
+  become: true
+  tasks:
+    - name: /opt/cartw points at worker set f (inventory and order workers)
+      ansible.builtin.file:
+        src: /opt/cartw-f
+        dest: /opt/cartw
+        state: link
+    - name: Worker enabled at boot and running
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - cw@inventory
+        - cw@order
+        - cw2@inventory
+        - cw2@order
+
+- name: The journal on every machine is capped, so it cannot fill the disk
+  hosts: machines
+  become: true
+  tasks:
+    - name: The drop-in directory exists
+      ansible.builtin.file:
+        path: /etc/systemd/journald.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+    - name: Cap the systemd journal at 200 MB
+      ansible.builtin.copy:
+        dest: /etc/systemd/journald.conf.d/forge-size.conf
+        content: |
+          [Journal]
+          SystemMaxUse=200M
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart journald
+  handlers:
+    - name: Restart journald
+      ansible.builtin.systemd_service:
+        name: systemd-journald
+        state: restarted
+
+# ---- off by default: only with the tag ----------------------------------------------------------------------------
+- name: "OFF BY DEFAULT (tag cleanup-logs): empty the oversized plain-text syslog files"
+  hosts: forge,workers
+  become: true
+  tags: [never, cleanup-logs]
+  tasks:
+    - name: Sizes before
+      ansible.builtin.shell: set -o pipefail; ls -la /var/log/syslog /var/log/syslog.1 2>/dev/null | awk '{print $5, $9}'
+      args:
+        executable: /bin/bash
+      register: before
+      changed_when: false
+    - name: Empty the current and the previous syslog (the files stay, their contents go)
+      ansible.builtin.command: truncate -s 0 /var/log/syslog /var/log/syslog.1
+      changed_when: true
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ before.stdout_lines }}"
+
+- name: "OFF BY DEFAULT (tag stop-extra-postgres): stop the unused PostgreSQL on the Forge application machine"
+  hosts: forge
+  become: true
+  tags: [never, stop-extra-postgres]
+  tasks:
+    - name: Stop and disable it (its data stays on disk)
+      ansible.builtin.systemd_service:
+        name: postgresql@16-main
+        state: stopped
+        enabled: false

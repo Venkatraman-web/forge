@@ -104,8 +104,8 @@ func RunRemoteCart(repo, runID string, rc RemoteCartConfig, att AttachConfig) in
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
-	if att.APIKey == "" || att.OperatorKey == "" || att.AppDBURL == "" {
-		fmt.Fprintln(os.Stderr, "error: set FORGE_API_KEY, FORGE_OPERATOR_API_KEY and FORGECART_ATTACH_APP_DB_URL (the ForgeCart database to erase between trials) in the environment")
+	if att.APIKey == "" || att.OperatorKey == "" || att.AppDBURL == "" || att.InventoryDBURL == "" {
+		fmt.Fprintln(os.Stderr, "error: set FORGE_API_KEY, FORGE_OPERATOR_API_KEY and FORGECART_ATTACH_APP_DB_URL (the ForgeCart orders database to erase between trials) and FORGECART_ATTACH_INVENTORY_DB_URL (the inventory database whose reservations are erased and stock reset) in the environment")
 		return 2
 	}
 	runDir := filepath.Join(repo, "forgecart", "test_files", "results", runID)

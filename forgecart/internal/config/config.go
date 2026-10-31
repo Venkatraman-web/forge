@@ -20,7 +20,13 @@ import (
 
 const (
 	DatabaseURLEnv = "FORGECART_DATABASE_URL"
-	AddrEnv        = "FORGECART_ADDR"
+	// InventoryDatabaseURLEnv is the inventory database (catalogue, stock, reservations; see
+	// docs/decisions/0005-inventory-service-and-checkout-saga.md). Required by the shop.
+	InventoryDatabaseURLEnv = "FORGECART_INVENTORY_DATABASE_URL"
+	InventoryDBMaxConnsEnv  = "FORGECART_INVENTORY_DB_MAX_CONNS"    // the shop's pool on the inventory database; default: the same as FORGECART_DB_MAX_CONNS
+	ReapAfterEnv            = "FORGECART_RESERVATION_REAP_AFTER"    // how long a reservation may stay without its order before the reaper looks at it; default 60s, at least 5s
+	ReapIntervalEnv         = "FORGECART_RESERVATION_REAP_INTERVAL" // how often the reaper runs; default 10s; 0s turns it off
+	AddrEnv                 = "FORGECART_ADDR"
 	// DefaultAddr is loopback only: ForgeCart has no authentication.
 	DefaultAddr = "127.0.0.1:8081"
 )
@@ -90,10 +96,16 @@ const (
 
 type Config struct {
 	DatabaseURL string
-	Addr        string
-	PaymentURL  string
-	PaymentKey  string
-	DBMaxConns  int
+	// InventoryDatabaseURL and InventoryDBMaxConns describe the shop's connection to the inventory database.
+	InventoryDatabaseURL string
+	InventoryDBMaxConns  int
+	// ReapAfter and ReapInterval drive the reservation reaper; ReapInterval 0 means it is off.
+	ReapAfter    time.Duration
+	ReapInterval time.Duration
+	Addr         string
+	PaymentURL   string
+	PaymentKey   string
+	DBMaxConns   int
 	// ExpiryAfter 0 means unpaid orders are never expired.
 	ExpiryAfter    time.Duration
 	ExpiryInterval time.Duration
@@ -191,6 +203,13 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("%s must be a postgres:// or postgresql:// URL with a host", DatabaseURLEnv)
 	}
 
+	if c.InventoryDatabaseURL = os.Getenv(InventoryDatabaseURLEnv); c.InventoryDatabaseURL == "" {
+		return c, fmt.Errorf("%s is required (the ForgeCart inventory database: catalogue, stock and reservations)", InventoryDatabaseURLEnv)
+	}
+	if iu, err := url.Parse(c.InventoryDatabaseURL); err != nil || (iu.Scheme != "postgres" && iu.Scheme != "postgresql") || iu.Host == "" {
+		return c, fmt.Errorf("%s must be a postgres:// or postgresql:// URL with a host", InventoryDatabaseURLEnv)
+	}
+
 	c.Addr = os.Getenv(AddrEnv)
 	if c.Addr == "" {
 		c.Addr = DefaultAddr
@@ -228,7 +247,22 @@ func Load() (Config, error) {
 	if c.PaymentKey = os.Getenv(PaymentKeyEnv); len(c.PaymentKey) < MinPaymentKeyLength {
 		return c, fmt.Errorf("%s must be at least %d characters", PaymentKeyEnv, MinPaymentKeyLength)
 	}
-	if c.DBMaxConns, err = dbMaxConns(); err != nil {
+	if c.DBMaxConns, err = dbMaxConns(DBMaxConnsEnv); err != nil {
+		return c, err
+	}
+	c.InventoryDBMaxConns = c.DBMaxConns
+	if os.Getenv(InventoryDBMaxConnsEnv) != "" {
+		if c.InventoryDBMaxConns, err = dbMaxConns(InventoryDBMaxConnsEnv); err != nil {
+			return c, err
+		}
+	}
+	if c.ReapAfter, err = envDurationDefault(ReapAfterEnv, 60*time.Second); err != nil {
+		return c, err
+	}
+	if c.ReapAfter < 5*time.Second || c.ReapAfter > 24*time.Hour {
+		return c, fmt.Errorf("%s must be between 5s and 24h", ReapAfterEnv)
+	}
+	if c.ReapInterval, err = envDurationDefault(ReapIntervalEnv, 10*time.Second); err != nil {
 		return c, err
 	}
 	if c.SweepInterval, err = envDurationDefault(SweepIntervalEnv, 30*time.Second); err != nil {
@@ -299,7 +333,7 @@ func LoadPaymentService() (PaymentServiceConfig, error) {
 		return c, fmt.Errorf("%s must be at least %d characters", PaymentKeyEnv, MinPaymentKeyLength)
 	}
 	var err error
-	if c.DBMaxConns, err = dbMaxConns(); err != nil {
+	if c.DBMaxConns, err = dbMaxConns(DBMaxConnsEnv); err != nil {
 		return c, err
 	}
 	c.MetricsAddr, c.MetricsKey = os.Getenv(MetricsAddrEnv), os.Getenv(MetricsKeyEnv)
@@ -354,14 +388,14 @@ func LoadPaymentService() (PaymentServiceConfig, error) {
 	return c, nil
 }
 
-// dbMaxConns reads the pool size (1 to 200, default appdb.DefaultMaxConns).
-func dbMaxConns() (int, error) {
-	n, err := envInt(DBMaxConnsEnv, appdb.DefaultMaxConns)
+// dbMaxConns reads the pool size named by env (1 to 200, default appdb.DefaultMaxConns).
+func dbMaxConns(env string) (int, error) {
+	n, err := envInt(env, appdb.DefaultMaxConns)
 	if err != nil {
 		return 0, err
 	}
 	if n < 1 || n > 200 {
-		return 0, fmt.Errorf("%s must be between 1 and 200", DBMaxConnsEnv)
+		return 0, fmt.Errorf("%s must be between 1 and 200", env)
 	}
 	return n, nil
 }
@@ -450,6 +484,8 @@ const (
 	// notification deliveries, inventory reconciliations). Unset = they live in the shop database.
 	ResultsDatabaseURLEnv = "FORGECART_RESULTS_DATABASE_URL"
 	WorkerConcurrencyEnv  = "FORGECART_WORKER_CONCURRENCY"
+	// Pool size of each of a worker's database pools (the shop database and, if set, the results database).
+	WorkerDBMaxConnsEnv = "FORGECART_WORKER_DB_MAX_CONNS"
 	// Optional tuning knobs of the Forge worker runtime (unset = the SDK default).
 	WorkerPollWaitEnv      = "FORGECART_WORKER_POLL_WAIT"      // how long one claim request may wait for work
 	WorkerShutdownGraceEnv = "FORGECART_WORKER_SHUTDOWN_GRACE" // how long to wait for running jobs when stopping
@@ -463,6 +499,7 @@ type WorkerConfig struct {
 	APIKey             string
 	Name               string
 	Concurrency        int
+	DBMaxConns         int // connections in each database pool; handlers beyond this wait for a connection
 
 	// Zero means "use the SDK default" (PollWait, ShutdownGrace) or "no worker-side cap" (JobTimeout).
 	PollWait      time.Duration
@@ -515,9 +552,12 @@ func LoadWorker(defaultName string) (WorkerConfig, error) {
 	if c.Concurrency, err = envInt(WorkerConcurrencyEnv, 4); err != nil {
 		return c, err
 	}
-	// The ForgeCart pool has 10 connections; keep handlers below that.
 	if c.Concurrency < 1 || c.Concurrency > workerruntime.MaxConcurrency {
 		return c, fmt.Errorf("%s must be between 1 and %d", WorkerConcurrencyEnv, workerruntime.MaxConcurrency)
+	}
+	// Handlers share these pools: with more handlers than connections, the extra ones wait for a connection.
+	if c.DBMaxConns, err = dbMaxConns(WorkerDBMaxConnsEnv); err != nil {
+		return c, err
 	}
 	if c.PollWait, err = envDuration(WorkerPollWaitEnv); err != nil {
 		return c, err

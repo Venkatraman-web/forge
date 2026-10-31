@@ -49,6 +49,9 @@ type TypePolicy struct {
 	MaxMaxAttempts     int `json:"max_max_attempts,omitempty"`
 	DefaultTimeoutSecs int `json:"default_timeout_seconds,omitempty"`
 	MaxTimeoutSecs     int `json:"max_timeout_seconds,omitempty"`
+	// MaxPending is the most jobs of this type that may be queued at once; 0 means no limit of its own
+	// (only the global one applies). Set by the operator's config file.
+	MaxPending int `json:"max_pending,omitempty"`
 }
 
 // Options are the per-job settings a submitter may choose. A zero field means

@@ -1,0 +1,6 @@
+---
+- name: Restart workers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+  loop: "{{ worker_units }}"

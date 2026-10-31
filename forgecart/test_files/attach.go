@@ -34,10 +34,13 @@ type AttachConfig struct {
 	ResultsDBURL string
 	// PaymentsDBURL is the payment service's database (its attempts and Razorpay links).
 	PaymentsDBURL string
+	// InventoryDBURL is the inventory database (catalogue, stock, reservations): its reservations are
+	// emptied and its stock reset between trials.
+	InventoryDBURL string
 }
 
-// businessTables are emptied between trials; products (the catalogue) is kept
-// and only its stock is reset.
+// businessTables are emptied between trials. The catalogue (products, in the inventory database) is
+// kept and only its stock is reset, and its reservations are emptied.
 var businessTables = []string{"razorpay_links", "order_items", "orders", "payment_attempts", "outbox_events", "inventory_reconciliations",
 	"invoice_items", "invoices", "notification_deliveries", "fulfillment_items", "fulfillments"}
 
@@ -85,7 +88,16 @@ func (s *Sandbox) resetAttached(ctx context.Context, cfg SandboxConfig) error {
 	if _, err := db.ExecContext(ctx, "TRUNCATE "+strings.Join(businessTables, ", ")+" CASCADE"); err != nil {
 		return fmt.Errorf("empty ForgeCart tables: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("UPDATE products SET inventory_quantity = %d, updated_at = now()", cfg.Inventory)); err != nil {
+	idb, err := sql.Open("pgx", a.InventoryDBURL)
+	if err != nil {
+		return fmt.Errorf("open inventory database: %w", err)
+	}
+	defer idb.Close()
+	idb.SetMaxOpenConns(1)
+	if _, err := idb.ExecContext(ctx, "TRUNCATE stock_reservations"); err != nil {
+		return fmt.Errorf("empty reservations: %w", err)
+	}
+	if _, err := idb.ExecContext(ctx, fmt.Sprintf("UPDATE products SET inventory_quantity = %d, updated_at = now()", cfg.Inventory)); err != nil {
 		return fmt.Errorf("reset stock: %w", err)
 	}
 	pdb, err := sql.Open("pgx", a.PaymentsDBURL)

@@ -157,7 +157,7 @@ func main() {
 		if *e1Reps > 0 {
 			rc.Repetitions = *e1Reps
 		}
-		att := AttachConfig{APIKey: os.Getenv("FORGE_API_KEY"), OperatorKey: os.Getenv("FORGE_OPERATOR_API_KEY"), AppDBURL: os.Getenv("FORGECART_ATTACH_APP_DB_URL"), ResultsDBURL: os.Getenv("FORGECART_ATTACH_RESULTS_DB_URL"), PaymentsDBURL: os.Getenv("FORGECART_ATTACH_PAYMENTS_DB_URL")}
+		att := AttachConfig{APIKey: os.Getenv("FORGE_API_KEY"), OperatorKey: os.Getenv("FORGE_OPERATOR_API_KEY"), AppDBURL: os.Getenv("FORGECART_ATTACH_APP_DB_URL"), ResultsDBURL: os.Getenv("FORGECART_ATTACH_RESULTS_DB_URL"), PaymentsDBURL: os.Getenv("FORGECART_ATTACH_PAYMENTS_DB_URL"), InventoryDBURL: os.Getenv("FORGECART_ATTACH_INVENTORY_DB_URL")}
 		id := *runID
 		if id == "" {
 			id = "rc" + time.Now().UTC().Format("060102150405") + randHex(1)

@@ -1,0 +1,39 @@
+---
+# Deploys what build.sh built, to the machines, and checks that each service really runs it.
+#   infra/ansible/build.sh
+#   infra/ansible/make-inventory.sh && infra/ansible/make-vars.sh
+#   ansible-playbook playbooks/deploy.yml -e release_label=v0.2.0 --check --diff     (a dry run first; it does not prove it will work)
+#   ansible-playbook playbooks/deploy.yml -e release_label=v0.2.0
+# NOT TESTED YET against the machines (written while they were stopped); the first real run is the test.
+- name: Refuse to run without a release label
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: A deploy says what it deploys
+      ansible.builtin.assert:
+        that: release_label is defined and release_label | length > 0
+        fail_msg: "pass the release with -e release_label=<label>, for example v0.2.0"
+
+- name: Neon address pins on the machines that talk to Neon
+  hosts: shop,workers,loadgen,cart_db
+  become: true
+  roles:
+    - common
+
+- name: Forge
+  hosts: forge
+  become: true
+  roles:
+    - forge
+
+- name: The shop, the payment service and the dispatchers
+  hosts: shop
+  become: true
+  roles:
+    - shop
+
+- name: The workers
+  hosts: workers
+  become: true
+  roles:
+    - workers

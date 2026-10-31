@@ -4,6 +4,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/Venkatraman-web/forge/forgecart/internal/catalog"
+	"github.com/Venkatraman-web/forge/forgecart/internal/inventory"
 	"github.com/Venkatraman-web/forge/forgecart/internal/orders"
 	"github.com/Venkatraman-web/forge/forgecart/internal/payments"
 )
@@ -43,8 +45,8 @@ type API struct {
 	m       *metrics
 }
 
-func New(db *sql.DB, log *slog.Logger, pay *payments.Service) *API {
-	return &API{db: db, catalog: catalog.NewStore(db), orders: orders.NewStore(db), pay: pay, log: log, m: newMetrics(db)}
+func New(db, inventoryDB *sql.DB, log *slog.Logger, pay *payments.Service) *API {
+	return &API{db: db, catalog: catalog.NewStore(inventoryDB), orders: orders.NewStore(db, inventory.NewStore(inventoryDB)), pay: pay, log: log, m: newMetrics(db)}
 }
 
 // NewServer returns an http.Server with explicit timeouts.
@@ -71,6 +73,11 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("/v1/products/{sku}", a.m.instrument("product_get", allowRead(a.getProduct)))
 	mux.HandleFunc("/v1/orders", a.m.instrument("order_create", allowOnly(a.createOrder, http.MethodPost)))
 	mux.HandleFunc("/v1/orders/{order_id}/payment-attempts", a.m.instrument("payment_attempt", allowOnly(a.createPaymentAttempt, http.MethodPost)))
+	// Every other path: the mux's own 404 is plain text, so answer in the API's JSON shape (one fixed
+	// metrics label, so the labels stay bounded however many different paths are tried).
+	mux.HandleFunc("/", a.m.instrument("not_found", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "not_found", "The requested path does not exist.")
+	}))
 	return mux
 }
 
@@ -102,6 +109,19 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": msg}})
+}
+
+// databaseDown reports an error that proves the database could not be reached at all (no connection
+// was made), as opposed to the failure of one statement. The right answer then is a retryable 503, not
+// a 500 that looks like a bug in the request.
+func databaseDown(err error) bool {
+	var ce *pgconn.ConnectError
+	return errors.As(err, &ce) || errors.Is(err, driver.ErrBadConn)
+}
+
+func writeUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "2")
+	writeError(w, http.StatusServiceUnavailable, "service_unavailable", "The service is temporarily unavailable; retry shortly.")
 }
 
 func (a *API) healthz(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +257,9 @@ func (a *API) createOrder(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.As(err, &oe):
 		writeOrderError(w, oe)
+	case databaseDown(err):
+		a.log.Warn("checkout refused: database unreachable")
+		writeUnavailable(w)
 	case err != nil:
 		// Log only a class: driver errors can carry row values such as emails.
 		a.log.Error("checkout failed", "cause", errClass(err))
@@ -327,6 +350,9 @@ func (a *API) createPaymentAttempt(w http.ResponseWriter, r *http.Request) {
 		// The attempt may or may not have been recorded; the same key settles it.
 		a.log.Warn("payment service unavailable", "cause", errClass(err))
 		writeError(w, http.StatusServiceUnavailable, "payment_unavailable", "The payment service could not be reached; retry with the same Idempotency-Key.")
+	case databaseDown(err):
+		a.log.Warn("payment refused: database unreachable")
+		writeUnavailable(w)
 	case err != nil:
 		a.log.Error("payment attempt failed", "cause", errClass(err))
 		writeError(w, http.StatusInternalServerError, "internal_error", "The request could not be completed.")

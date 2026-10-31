@@ -1,0 +1,29 @@
+---
+# Checks only, changes nothing: every service runs the binary built here, and answers its health check.
+#   ansible-playbook playbooks/verify.yml
+- name: Forge
+  hosts: forge
+  become: true
+  tasks:
+    - name: Check Forge
+      ansible.builtin.include_role:
+        name: forge
+        tasks_from: verify
+
+- name: The shop, the payment service and the dispatchers
+  hosts: shop
+  become: true
+  tasks:
+    - name: Check the shop machine
+      ansible.builtin.include_role:
+        name: shop
+        tasks_from: verify
+
+- name: The workers
+  hosts: workers
+  become: true
+  tasks:
+    - name: Check the workers
+      ansible.builtin.include_role:
+        name: workers
+        tasks_from: verify

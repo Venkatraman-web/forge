@@ -1,7 +1,8 @@
 # Forge server image. Build: docker build -t forge .
 # Two stages: compile with the Go toolchain, then copy only the static binary
 # into a small image that runs as an unprivileged user.
-FROM golang:1.24-alpine AS build
+# The Go version must be at least the "go" line of go.mod; the official image tracks the latest patch release.
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

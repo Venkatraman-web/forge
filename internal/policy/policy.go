@@ -53,6 +53,7 @@ type fileType struct {
 	MaxMaxAttempts     int    `json:"max_max_attempts"`
 	DefaultTimeout     string `json:"default_timeout"`
 	MaxTimeout         string `json:"max_timeout"`
+	MaxPending         int    `json:"max_pending"`
 }
 
 type file struct {
@@ -116,7 +117,10 @@ func parse(raw []byte, maxJobTimeout time.Duration) (*Policy, error) {
 }
 
 func resolve(in fileType, maxJobTimeout time.Duration) (jobs.TypePolicy, error) {
-	t := jobs.TypePolicy{DefaultMaxAttempts: in.DefaultMaxAttempts, MaxMaxAttempts: in.MaxMaxAttempts}
+	t := jobs.TypePolicy{DefaultMaxAttempts: in.DefaultMaxAttempts, MaxMaxAttempts: in.MaxMaxAttempts, MaxPending: in.MaxPending}
+	if in.MaxPending < 0 {
+		return t, errors.New("max_pending must be at least 1 (leave it out for no limit of its own)")
+	}
 	for _, a := range []struct {
 		name string
 		v    int
@@ -160,6 +164,18 @@ func seconds(name, value string, maxJobTimeout time.Duration) (int, error) {
 }
 
 // TypeNames lists the declared job types, sorted.
+// MaxPendingLimits returns the per-type limits on queued jobs that the file sets (types without one are
+// left out).
+func (p *Policy) MaxPendingLimits() map[string]int {
+	out := map[string]int{}
+	for name, t := range p.Types {
+		if t.MaxPending > 0 {
+			out[name] = t.MaxPending
+		}
+	}
+	return out
+}
+
 func (p *Policy) TypeNames() []string {
 	names := make([]string, 0, len(p.Types))
 	for n := range p.Types {

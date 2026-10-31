@@ -95,6 +95,9 @@ type errorBody struct {
 type errorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// JobType and Limit are set only for a queue_full that came from one job type's own limit (max_pending).
+	JobType string `json:"job_type,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
 }
 
 type submitRequest struct {
@@ -367,11 +370,21 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, listResponse{Jobs: list})
 }
 
+// jobIDPattern is the shape jobs.NewID produces.
+var jobIDPattern = regexp.MustCompile(`^job_[0-9a-f]{16}$`)
+
 func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
-	job, err := s.store.Get(r.Context(), r.PathValue("id"))
+	// An id that cannot be one of ours (jobs.NewID makes "job_" and 16 hex digits) is "not found" without
+	// asking the database: bytes such as NUL make PostgreSQL fail, which would otherwise be answered as a 500.
+	id := r.PathValue("id")
+	if !jobIDPattern.MatchString(id) {
+		writeError(w, http.StatusNotFound, "job_not_found", "No job exists with that ID.")
+		return
+	}
+	job, err := s.store.Get(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "job_not_found", "No job exists with that ID.")
 		return
@@ -419,6 +432,13 @@ func writeSubmitError(w http.ResponseWriter, err error) {
 		// is expected to work. The stable code lets a submitter tell this apart
 		// from other 503s, and Retry-After tells it how long to wait.
 		w.Header().Set("Retry-After", strconv.Itoa(queueFullRetryAfterSeconds))
+		var qf *worker.QueueFullError
+		if errors.As(err, &qf) {
+			writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: errorDetail{
+				Code: "queue_full", JobType: qf.JobType, Limit: qf.Limit,
+				Message: fmt.Sprintf("The queue for job type %q is at its limit of %d queued jobs. Please try again later.", qf.JobType, qf.Limit)}})
+			break
+		}
 		writeError(w, http.StatusServiceUnavailable, "queue_full", "Forge is at capacity. Please try again later.")
 	case errors.Is(err, worker.ErrAdmissionBusy):
 		// Backpressure, distinct from queue_full: the queue may have room. Nothing

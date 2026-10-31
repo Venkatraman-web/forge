@@ -70,7 +70,7 @@ func (p *Preparer) Prepare(ctx context.Context, in Input) (Result, error) {
 		return res, err
 	}
 
-	_, lines, err := bizjob.ReadPaidOrder(ctx, p.dbs.Shop, EventType, in)
+	_, lines, err := p.dbs.ReadPaidOrder(ctx, EventType, in)
 	if err != nil {
 		return Result{}, err
 	}
@@ -81,31 +81,18 @@ func (p *Preparer) Prepare(ctx context.Context, in Input) (Result, error) {
 	}
 	id := "ful_" + hex.EncodeToString(rb[:])
 
-	tx, err := p.dbs.Results.BeginTx(ctx, nil)
-	if err != nil {
-		return Result{}, err
-	}
-	defer tx.Rollback()
-	if dup, inserted, err := effect.Insert(ctx, p.dbs.Results, tx, in, `
-		INSERT INTO fulfillments (id, event_id, order_id, payment_attempt_id, status)
-		VALUES ($1, $2, $3, $4, $5) ON CONFLICT (event_id) DO NOTHING`,
-		id, in.EventID, in.OrderID, in.PaymentAttemptID, StatusPrepared); !inserted {
-		return dup, err
-	}
-
-	// Snapshot the lines read from the order (SKU order), in the same transaction.
-	ins, err := tx.ExecContext(ctx, `
+	// One statement writes the fulfillment plan and its line snapshot (SKU order): it
+	// is atomic by itself, and its affected-row count is the number of lines.
+	if dup, inserted, err := effect.Write(ctx, p.dbs.Results, in, int64(len(lines)), `
+		WITH h AS (
+			INSERT INTO fulfillments (id, event_id, order_id, payment_attempt_id, status)
+			VALUES ($1, $2, $3, $4, $5) ON CONFLICT (event_id) DO NOTHING RETURNING id
+		)
 		INSERT INTO fulfillment_items (fulfillment_id, line_number, sku, product_name, quantity)
-		SELECT $1, row_number() OVER (ORDER BY sku), sku, product_name, quantity
-		FROM jsonb_to_recordset($2::jsonb) AS l(sku text, product_name text, quantity int)`, id, lines.JSON())
-	if err != nil {
-		return Result{}, err
-	}
-	if c, _ := ins.RowsAffected(); int(c) != len(lines) {
-		return Result{}, errors.New("fulfillment: item snapshot count differs from the verified lines; retry")
-	}
-	if err := tx.Commit(); err != nil {
-		return Result{}, err
+		SELECT h.id, row_number() OVER (ORDER BY l.sku), l.sku, l.product_name, l.quantity
+		FROM h, jsonb_to_recordset($6::jsonb) AS l(sku text, product_name text, quantity int)`,
+		id, in.EventID, in.OrderID, in.PaymentAttemptID, StatusPrepared, lines.JSON()); !inserted {
+		return dup, err
 	}
 	return Result{FulfillmentID: id, OrderID: in.OrderID, Status: StatusPrepared, Items: len(lines)}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Venkatraman-web/forge/internal/jobs"
@@ -250,3 +251,21 @@ type Store interface {
 	// that moves from queued to running while it runs is counted exactly once.
 	QueueStats(ctx context.Context) (QueueStats, error)
 }
+
+// TypeFullError is a queue-full refusal caused by one job type's own limit (max_pending), as opposed to the
+// global limit. errors.Is(err, ErrQueueFull) is true for it. Type may be empty when the store could not
+// tell which type of a batch was full.
+type TypeFullError struct {
+	Type  string
+	Limit int
+}
+
+func (e *TypeFullError) Error() string {
+	if e.Type == "" {
+		return "job queue is full: a job type is at its own limit"
+	}
+	return fmt.Sprintf("job queue is full: job type %q is at its limit of %d queued jobs", e.Type, e.Limit)
+}
+
+// Is makes a TypeFullError match ErrQueueFull.
+func (e *TypeFullError) Is(target error) bool { return target == ErrQueueFull }

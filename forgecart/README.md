@@ -1,4 +1,4 @@
-# ForgeCart (reference application, through milestone 25.4.3.2)
+# ForgeCart (reference application)
 
 ForgeCart is a local-development ecommerce example used to evaluate Forge's background-job platform. **So far it has a product catalog, checkout (order creation, stock reservation, idempotency) and a simulated payment provider and a transactional outbox.** No real payment is ever taken. A separate **dispatcher** process publishes the outbox events to Forge as jobs. **All four business workers exist** (`inventory.reconcile`, `invoice.generate`, `notification.send`, `fulfillment.prepare`), each a separate process. (An analytics worker existed earlier and was removed: in a real shop analytics is an event pipeline outside the order path.)
 
@@ -182,18 +182,19 @@ Kept deliberately small: no webhook (you call the endpoint again to check), no r
 
 ### Transactional outbox
 
-**Why.** After a payment succeeds, ForgeCart wants four background jobs run. Calling Forge from the payment request could leave a paid order with no jobs (Forge down, crash after commit) or jobs for a payment that rolled back. Instead the payment transaction writes the *intent* to the `outbox_events` table; a separate dispatcher (a later task, **not written yet**) will read the rows and submit jobs to Forge. The outbox gives durable publication intent. It does not give exactly-once publication or execution: the dispatcher will publish at least once, and handlers must tolerate duplicates.
+**Why.** After a payment succeeds, ForgeCart wants background jobs run (two since 2026-10-30, four before). Calling Forge from the payment request could leave a paid order with no jobs (Forge down, crash after commit) or jobs for a payment that rolled back. Instead the payment transaction writes the *intent* to the `outbox_events` table; a separate dispatcher (a later task, **not written yet**) will read the rows and submit jobs to Forge. The outbox gives durable publication intent. It does not give exactly-once publication or execution: the dispatcher will publish at least once, and handlers must tolerate duplicates.
 
 **Transaction boundary.** In the same transaction that inserts the successful attempt and sets the order `paid`/`committed`, ForgeCart inserts **one** outbox row: the order's `order.paid` event (the insert must affect one row). If any step fails, the attempt, the order change and the event roll back together, and the same payment key can be retried. A committed successful payment therefore always has its event, and no event exists for a payment that did not commit. The payment request sends nothing to Forge and starts no goroutine.
 
-**One event, four jobs (since 2026-10-24).** The dispatcher turns an `order.paid` event into **four Forge jobs** when it publishes it, always in the same Forge request, so the event is either published or not (an event's jobs are never split across two requests). Writing one row per order instead of one per job cut the outbox's writes from 16 row writes per order (each of four events was inserted, leased, attempt-counted and marked published) to 4; measured on AWS the gain in end-to-end throughput was only about 3 to 7% (details in `docs/benchmarks-aws.md`). Events written by the earlier design (one event per job, with the job's own type) are still valid and are published as one job each, and the workers accept them.
+**One event, four jobs (2026-10-24 to 2026-10-30; superseded by the next paragraph).** The dispatcher turns an `order.paid` event into **four Forge jobs** when it publishes it, always in the same Forge request, so the event is either published or not (an event's jobs are never split across two requests). Writing one row per order instead of one per job cut the outbox's writes from 16 row writes per order (each of four events was inserted, leased, attempt-counted and marked published) to 4; measured on AWS the gain in end-to-end throughput was only about 3 to 7% (details in `docs/benchmarks-aws.md`). Events written by the earlier design (one event per job, with the job's own type) are still valid and are published as one job each, and the workers accept them.
+
+**Two jobs per paid order since 2026-10-30.** The dispatcher now turns an `order.paid` event into **two** Forge jobs, `inventory.reconcile` and `order.process` (the latter does what `invoice.generate`, `fulfillment.prepare` and `notification.send` did, in one job). The reason is cost: each job is a claim and a completion in Forge, a read of the order in the shop database, and a look-up, a write and a commit in the results database, and halving the jobs roughly halves that work. The price is isolation: the three effects now succeed, are retried and are rejected together (each is still idempotent, so a retry is safe). Jobs published earlier under the four-job design still run on the old workers.
 
 | Job type (one job per paid order) | The worker's job |
 |---|---|
 | `inventory.reconcile` | Check order/stock consistency. Stock was already deducted at checkout and payment only marks it `committed`, so this must never blindly add or subtract stock; any correction must follow explicit idempotent rules. |
-| `fulfillment.prepare` | Prepare shipment for the order. |
-| `invoice.generate` | Generate the invoice. |
-| `notification.send` | Send the confirmation. |
+| `order.process` | Since 2026-10-30: record the invoice, the fulfillment plan and the confirmation notification of the order, in one job (see the order worker below). |
+| `fulfillment.prepare`, `invoice.generate`, `notification.send` | Until 2026-10-30 each of these was a job of its own; the separate workers still exist and still work, and the order worker falls back to the same steps in unusual cases. |
 
 **Event contract.** `id` is `evt_` + 24 hex characters, generated once and never changed, so it can identify the event across publication retries, on the Forge job and in the business effect (a handler can use it to avoid doing the work twice). `payload` is a JSON object of at most 1 KiB, and contains only `{"order_id": "ord_...", "payment_attempt_id": "pay_..."}`. It has no customer data, prices, items, secrets or error text; workers load what they need from ForgeCart's database by order ID. The dispatcher will build each Forge job input from `event_id` (the row `id`), the event type (as the job type) and that payload.
 
@@ -224,7 +225,7 @@ export FORGECART_FORGE_API_KEY='<Forge FORGE_API_KEY>'  # Forge's submit key (a 
 go run ./forgecart/cmd/forgecart-dispatcher
 ```
 
-Forge must accept the four job types: start it in remote mode with `FORGE_EXECUTION_MODE=remote FORGE_REMOTE_JOB_TYPES=inventory.reconcile,fulfillment.prepare,invoice.generate,notification.send` (plus its worker API settings). Forge's job API has **no authentication and no idempotency key** (verified in its source), so the dispatcher sends neither and does not use an API key; put Forge behind your own network controls. Never expose it publicly.
+Forge must accept the job types: start it in remote mode with `FORGE_EXECUTION_MODE=remote FORGE_REMOTE_JOB_TYPES=inventory.reconcile,order.process` (add `fulfillment.prepare,invoice.generate,notification.send` while jobs published under the four-job design may still be in the queue) (plus its worker API settings). Forge's job API has **no authentication and no idempotency key** (verified in its source), so the dispatcher sends neither and does not use an API key; put Forge behind your own network controls. Never expose it publicly.
 
 | Variable | Default | Rule |
 |---|---|---|
@@ -281,7 +282,12 @@ The first business worker. It runs `inventory.reconcile` jobs, using the Forge G
 | `FORGECART_FORGE_WORKER_URL` | required | Forge's worker API address (`FORGE_WORKER_ADDR`), e.g. `http://127.0.0.1:8081` |
 | `FORGECART_FORGE_WORKER_API_KEY` | required | Forge's shared worker key (`FORGE_WORKER_API_KEY`). A secret: never logged or printed, but it is a development stand-in, not real authentication |
 | `FORGECART_WORKER_NAME` | `forgecart-inventory` | label in worker IDs and logs |
+| `FORGECART_INVENTORY_DATABASE_URL` | none, required by the shop | the inventory database (catalogue, stock, reservations; apply `inventory_migrations/` to it). The shop and `forgecart seed` use it; the workers and the payment service do not |
+| `FORGECART_INVENTORY_DB_MAX_CONNS` | same as `FORGECART_DB_MAX_CONNS` | the shop's pool on the inventory database |
+| `FORGECART_RESERVATION_REAP_AFTER` | `60s` | how long a stock reservation may stay `reserved` before the reaper looks at it (5s to 24h) |
+| `FORGECART_RESERVATION_REAP_INTERVAL` | `10s` | how often the reaper sweeps; `0s` turns it off |
 | `FORGECART_WORKER_CONCURRENCY` | `4` | handlers at once, 1 to 64 (the worker SDK's limit) |
+| `FORGECART_WORKER_DB_MAX_CONNS` | `10` | connections in each of the worker's database pools (shop and results), 1 to 200; handlers beyond this wait for a connection |
 | `FORGECART_WORKER_POLL_WAIT` | SDK default (20 s) | how long one claim request waits for work, whole seconds 1s-25s |
 | `FORGECART_WORKER_SHUTDOWN_GRACE` | SDK default (30 s) | how long to wait for running jobs when stopping, up to 1h |
 | `FORGECART_WORKER_JOB_TIMEOUT` | none | worker-side cap on one attempt (`workerruntime.WithTimeout`); it can only shorten the job's own timeout, minimum 1s |
@@ -297,6 +303,18 @@ go run ./forgecart/cmd/forgecart-inventory-worker
 ```
 
 Forge must run in remote mode with `inventory.reconcile` allowed (the dispatcher section lists all four). **Limits:** reconciliation never repairs anything, it only rejects or records; a rejected order stays unreconciled and its Forge job stays `failed` (no replay tooling); delivery is at-least-once, which is why the handler is idempotent.
+
+### Inventory database and the checkout saga (since 2026-10-30)
+
+The catalogue and the stock live in their own database (`inventory_migrations/`), not in the orders database, so that the stock rows and their locks and commits are separate from the orders. Checkout is a **saga of two local transactions** instead of one: it reads the products without locks, **reserves** the stock in the inventory database (one short transaction keyed by the order id), then creates the order and its items in the orders database in one statement; if that fails or the idempotency key was already used, the reservation is released. A declined or expired order is marked first and then released. A **reaper** in the shop process releases what a crash leaves behind (a reservation with no order, or one for a declined or cancelled order) and marks the reservations of paid orders `committed`. The reasoning, the failure table and the tests are in [docs/decisions/0005-inventory-service-and-checkout-saga.md](../docs/decisions/0005-inventory-service-and-checkout-saga.md). The orders database has no products table any more (`migrations/20260101000019_split_inventory.sql` drops it: copy the catalogue into the inventory database first).
+
+### Order worker (`cmd/forgecart-order-worker`)
+
+Runs `order.process` jobs: the invoice, the fulfillment plan and the confirmation notification of a paid order, in one job. Configuration, deployment and shutdown are the same as the other workers (it shares the `workerapp` main and the `bizjob` input and classification code). Forge must allow `order.process` (`forgecart/forge.json` declares its retry budget and timeout).
+
+**How it records.** It checks, with one read of the results database, that none of the three rows exists for the event; then it reads the order once (the shared, batched `bizjob` read with every check of the other workers) and writes the invoice with its items, the fulfillment plan with its items, and the notification in **one statement** (data-modifying CTEs, atomic by itself, one commit). Each of the three rows keeps its own table and its own `UNIQUE(event_id)`.
+
+**Everything unusual is left to the three separate steps** (`invoice`, `fulfillment`, `notification` packages), which are each idempotent and keep their own rules: a duplicate delivery, a row already written by one of the old jobs, a different payment attempt for the same event, an order another event already owns, an order without a recipient. If one step fails with an infrastructure error the job is retried; otherwise the first rejection is the job's rejection.
 
 ### Invoice worker (`cmd/forgecart-invoice-worker`)
 

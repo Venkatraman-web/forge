@@ -1,0 +1,61 @@
+---
+# The Forge server: the binary built here, the policy file from the repository, the service enabled and running.
+# /etc/forge.env (keys, database URL) is NOT managed here: it holds secrets and stays as it is (only its mode is checked).
+- name: Fingerprint of the Forge binary built here
+  ansible.builtin.stat:
+    path: "{{ artifact_dir }}/forge"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: forge_artifact
+
+- name: The binary was built (run infra/ansible/build.sh first)
+  ansible.builtin.assert:
+    that: forge_artifact.stat.exists
+    fail_msg: "{{ artifact_dir }}/forge is missing; run build.sh"
+
+- name: The binary is installed under the release label
+  ansible.builtin.copy:
+    src: "{{ artifact_dir }}/forge"
+    dest: "{{ forge_dir }}/forge-{{ release_label }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart forge
+
+- name: The service starts that binary
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/system/forge.service
+    regexp: '^ExecStart='
+    line: "ExecStart={{ forge_dir }}/forge-{{ release_label }}"
+  notify: Restart forge
+
+- name: The policy file comes from the repository
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../forgecart/forge.json"
+    dest: /etc/forge.json
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  notify: Restart forge
+
+- name: The settings file with the keys is private
+  ansible.builtin.file:
+    path: /etc/forge.env
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: The service is enabled at boot and running
+  ansible.builtin.systemd_service:
+    name: forge
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply the restart now, before checking
+  ansible.builtin.meta: flush_handlers
+
+- name: Check what is running
+  ansible.builtin.import_tasks: verify.yml

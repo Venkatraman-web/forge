@@ -1,4 +1,4 @@
-h1:E5Cd2DgpvAzylcCfPcQ81V/vTcVp9JHL/attGRVuDsE=
+h1:4B+oiAi116NikCrQcpkeNtdMk9nyeTvs5DnduoptI5Q=
 20261018134608_create_jobs.sql h1:KucgyIJBJRX5FX5XHMIT2MaslgkSYCbChxJkQJuOZJI=
 20261018201314_execution_schema_foundation.sql h1:UUPaKhfPMSef38fjt50NyzKqdKuOtaFpI1f/VvdNyfY=
 20261021173152_queue_counter.sql h1:JHnb+va4o0SLaGd49+fGWBJE7D6aXD6JFxzf3oqRM84=
@@ -8,3 +8,5 @@ h1:E5Cd2DgpvAzylcCfPcQ81V/vTcVp9JHL/attGRVuDsE=
 20261023120000_queue_counter_shards.sql h1:ErWej4L+oVlsIArK7bYDzcfOkLhOdgWstFgzx2sjrFg=
 20261023150000_idempotency_key.sql h1:LLknnIcdsgmR+SjEKK2TAlaAdwqYoabUc3wLlLlDHt8=
 20261024100000_jobs_finished_index.sql h1:nH/xyi2gibsEeuqZ79xv8AfIKPvLCjfF2jeT1jWvumE=
+20261030002930_jobs_due_type_index.sql h1:YFk/II5dLtonDn+kUjkU79hH0jXMHwyNY+Fy/oKZ5Ms=
+20261030120000_type_max_pending.sql h1:X94xPREwx1xT1rlQyZyg4UijKAZ/YqFUR5srRmG6cKE=

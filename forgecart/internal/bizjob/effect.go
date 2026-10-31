@@ -29,8 +29,8 @@ type Stored[R any] struct {
 //	Existing  - fast path before any transaction: an event that already has a
 //	            record is a duplicate (same order and payment attempt) or a
 //	            conflict (anything else).
-//	Insert    - run the worker's INSERT ... ON CONFLICT (event_id) DO NOTHING in
-//	            its transaction and classify what happened.
+//	Write     - run the worker's INSERT ... ON CONFLICT (event_id) DO NOTHING as
+//	            one statement and classify what happened.
 //
 // Verification, the SQL, the typed records and the comparison of stored values
 // stay in the worker; this type only classifies outcomes.
@@ -72,11 +72,15 @@ func (e Effect[R]) Existing(ctx context.Context, q Queryer, in Input) (res R, fo
 	return res, true, err
 }
 
-// Insert runs the worker's insert (which must end in ON CONFLICT (event_id) DO
-// NOTHING) inside tx and classifies the outcome:
+// Write runs the worker's write as ONE statement on db, outside any explicit
+// transaction (a statement is atomic by itself, so a header row and its item rows
+// written by one statement with data-modifying CTEs commit together or not at all;
+// that saves the BEGIN and COMMIT round trips). The statement must end in ON
+// CONFLICT (event_id) DO NOTHING on the header row and report in its affected-row
+// count wantRows when the header was written and 0 when it was not, and Write
+// classifies the outcome:
 //
-//   - one row inserted: inserted is true and the caller continues in tx
-//     (further inserts, then Commit);
+//   - wantRows affected: inserted is true;
 //   - zero rows: a concurrent delivery of the same event committed first;
 //   - a unique violation on one of OrderConstraints: either that concurrent
 //     delivery (the record for this event exists) or another event that already
@@ -85,28 +89,24 @@ func (e Effect[R]) Existing(ctx context.Context, q Queryer, in Input) (res R, fo
 //     database error and is returned unchanged, so Forge retries it. It is never
 //     turned into a duplicate or a business rejection.
 //
-// Whenever inserted is false the transaction has been rolled back and must not
-// be used again. That matters for the unique-violation case: PostgreSQL has
-// aborted the transaction, so nothing can be queried in it. The record is read
-// back through db, outside the transaction, after the rollback.
-func (e Effect[R]) Insert(ctx context.Context, db *sql.DB, tx *sql.Tx, in Input, query string, args ...any) (res R, inserted bool, err error) {
-	r, err := tx.ExecContext(ctx, query, args...)
+// Whenever inserted is false nothing was written, and the record is read back
+// through db to decide between duplicate and conflict.
+func (e Effect[R]) Write(ctx context.Context, db *sql.DB, in Input, wantRows int64, query string, args ...any) (res R, inserted bool, err error) {
+	r, err := db.ExecContext(ctx, query, args...)
 	if err == nil {
 		n, rerr := r.RowsAffected()
 		switch {
 		case rerr != nil:
 			return res, false, rerr
-		case n == 1:
+		case n == wantRows:
 			return res, true, nil
 		case n != 0:
-			return res, false, errors.New("bizjob: insert affected an unexpected number of rows")
+			return res, false, errors.New("bizjob: write affected an unexpected number of rows")
 		}
-		tx.Rollback()
 		return e.afterConflict(ctx, db, in, nil)
 	}
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && pe.Code == "23505" && slices.Contains(e.OrderConstraints, pe.ConstraintName) {
-		tx.Rollback()
 		return e.afterConflict(ctx, db, in, Reject(e.OtherEventCode))
 	}
 	return res, false, err

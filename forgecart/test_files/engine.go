@@ -27,10 +27,10 @@ import (
 const (
 	maxResponseBytes = 256 << 10
 	// Hard safety limits for any scenario (configurable values are clamped to these).
-	// 500 is also the most the remote-cart command accepts; a lower value here silently turns a
+	// This is also the most the remote-cart command accepts; a lower value here silently turns a
 	// request for more shoppers into fewer (it was 200 until 2026-10-24, so earlier runs labelled
-	// 300 to 500 shoppers really used 200).
-	HardMaxConcurrency = 500
+	// 300 to 500 shoppers really used 200; it was 500 until 2026-10-30).
+	HardMaxConcurrency = 1000
 	HardMaxWorkflows   = 50_000
 	HardMaxSeconds     = 1800
 )

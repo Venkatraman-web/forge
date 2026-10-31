@@ -426,10 +426,16 @@ func failure(op string, status int, hdr http.Header, raw []byte) error {
 			Error struct {
 				Code    string `json:"code"`
 				Message string `json:"message"`
+				JobType string `json:"job_type"`
+				Limit   int    `json:"limit"`
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &body) // a body that does not parse leaves Code and Message empty
 		e.Code, e.Message = clean(body.Error.Code, 64), clean(body.Error.Message, maxMessageRunes)
+		e.JobType = clean(body.Error.JobType, 64)
+		if body.Error.Limit > 0 {
+			e.Limit = body.Error.Limit
+		}
 		e.RetryAfter = parseRetryAfter(hdr.Get("Retry-After"))
 	}
 	return e

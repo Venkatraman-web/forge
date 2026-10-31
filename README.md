@@ -9,12 +9,12 @@ what is happening.
 Forge is single-tenant by design: you run your own copy (one container plus one PostgreSQL), so nobody
 else's jobs are in it.
 
-> **Status:** a well-tested, measured project, not a production service. It has not carried real users or
+> **Status:** a measured project, not a production service. It has no automated tests in the repository (checks are scripted and run by hand against real databases). It has not carried real users or
 > real money. The limits are stated in [docs/architecture.md](docs/architecture.md#8-limits-stated-plainly).
 
 ## Try it in five minutes
 
-You need Docker (with Compose) and Go 1.24 or newer.
+You need Docker (with Compose) and Go 1.25 or newer.
 
 ```bash
 cp .env.example .env
@@ -37,7 +37,7 @@ with [`sdk/workerruntime`](sdk/workerruntime).
 
 ## Use the SDK in your own project
 
-You need Go 1.24 or newer and a running Forge (the quickstart above). In your own Go project:
+You need Go 1.25 or newer and a running Forge (the quickstart above). In your own Go project:
 
 ```bash
 go get github.com/Venkatraman-web/forge@v0.1.0
@@ -108,9 +108,12 @@ describes every setting and function.
 ## A worked example at scale
 
 [`forgecart/`](forgecart/README.md) is an online shop built on Forge (orders, a separate payment service,
-an outbox, four background workers) with a load-test tool. On small AWS machines it finished about 550 to
-580 complete orders per second (including four background jobs each), and ran 1.3 million orders in an
-hour with no failures. Every number, and how it was measured, is in
+an outbox, background workers) with a load-test tool. On small AWS machines with the databases on EC2 it finished
+about 550 to 580 complete orders per second (an earlier build with four background jobs per order; ran 1.3 million
+orders in an hour with no failures). The current build, with the databases on Neon free-tier projects, measured
+about 1,000 complete orders per second (two background jobs per order; checkout alone about 1,470 per second,
+two runs per variant in one session, see benchmarks section 71). It was also stopped, frozen, slowed and cut
+off in chaos tests (sections 62 to 69). Every number, and how it was measured, is in
 [docs/benchmarks-aws.md](docs/benchmarks-aws.md).
 
 ## Where to read next

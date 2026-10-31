@@ -16,7 +16,7 @@ import (
 
 const (
 	EventType  = "notification.send"
-	template   = "order_confirmation"
+	Template   = "order_confirmation"
 	StatusSent = "simulated_sent"
 )
 
@@ -71,7 +71,7 @@ func (n *Notifier) Send(ctx context.Context, in Input) (Result, error) {
 
 	// The confirmation needs the order's lines: ReadPaidOrder checks that they
 	// exist and add up.
-	order, _, err := bizjob.ReadPaidOrder(ctx, n.dbs.Shop, EventType, in)
+	order, _, err := n.dbs.ReadPaidOrder(ctx, EventType, in)
 	if err != nil {
 		return Result{}, err
 	}
@@ -85,19 +85,11 @@ func (n *Notifier) Send(ctx context.Context, in Input) (Result, error) {
 	}
 	id := "ntf_" + hex.EncodeToString(rb[:])
 
-	tx, err := n.dbs.Results.BeginTx(ctx, nil)
-	if err != nil {
-		return Result{}, err
-	}
-	defer tx.Rollback()
-	if dup, inserted, err := effect.Insert(ctx, n.dbs.Results, tx, in, `
+	if dup, inserted, err := effect.Write(ctx, n.dbs.Results, in, 1, `
 		INSERT INTO notification_deliveries (id, event_id, order_id, payment_attempt_id, template, recipient_email, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (event_id) DO NOTHING`,
-		id, in.EventID, in.OrderID, in.PaymentAttemptID, template, order.Email, StatusSent); !inserted {
+		id, in.EventID, in.OrderID, in.PaymentAttemptID, Template, order.Email, StatusSent); !inserted {
 		return dup, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Result{}, err
 	}
 	return Result{DeliveryID: id, OrderID: in.OrderID, Status: StatusSent}, nil
 }

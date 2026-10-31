@@ -65,20 +65,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, in Input) (Result, error) {
 		return res, err
 	}
 
-	order, err := bizjob.VerifyPaidOrder(ctx, r.dbs.Shop, EventType, in)
+	order, err := r.dbs.VerifyPaidOrder(ctx, EventType, in)
 	if err != nil {
 		return Result{}, err
 	}
 	subtotal := order.Subtotal
 
-	// Inspect the reserved lines. Read-only: stock is neither deducted nor restored.
+	// Inspect the reserved lines. Read-only: stock is neither deducted nor restored. (The stock itself
+	// lives in the inventory database and cannot go negative: a CHECK constraint there enforces it.)
 	var items, units int
 	var lines int64
 	var badStock int
 	err = r.dbs.Shop.QueryRowContext(ctx, `
 		SELECT count(*), COALESCE(sum(oi.quantity), 0), COALESCE(sum(oi.line_total_minor), 0),
-		       count(*) FILTER (WHERE p.inventory_quantity < 0 OR oi.quantity <= 0)
-		FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = $1`, in.OrderID).Scan(&items, &units, &lines, &badStock)
+		       count(*) FILTER (WHERE oi.quantity <= 0)
+		FROM order_items oi WHERE oi.order_id = $1`, in.OrderID).Scan(&items, &units, &lines, &badStock)
 	if err != nil {
 		return Result{}, err
 	}
@@ -86,19 +87,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, in Input) (Result, error) {
 		return Result{}, reject("order_items_inconsistent")
 	}
 
-	tx, err := r.dbs.Results.BeginTx(ctx, nil)
-	if err != nil {
-		return Result{}, err
-	}
-	defer tx.Rollback()
-	if dup, inserted, err := effect.Insert(ctx, r.dbs.Results, tx, in, `
+	if dup, inserted, err := effect.Write(ctx, r.dbs.Results, in, 1, `
 		INSERT INTO inventory_reconciliations (event_id, order_id, payment_attempt_id, outcome, items_checked, units_checked)
 		VALUES ($1, $2, $3, 'verified', $4, $5) ON CONFLICT (event_id) DO NOTHING`,
 		in.EventID, in.OrderID, in.PaymentAttemptID, items, units); !inserted {
 		return dup, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Result{}, err
 	}
 	return Result{Outcome: "verified", ItemsChecked: items, UnitsChecked: units}, nil
 }

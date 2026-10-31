@@ -194,7 +194,7 @@ func (s *Service) submit(ctx context.Context, jobType string, input json.RawMess
 	switch {
 	case errors.Is(err, store.ErrQueueFull):
 		s.countRejection(jobType)
-		return jobs.Job{}, false, ErrQueueFull
+		return jobs.Job{}, false, queueFull(err)
 	case errors.Is(err, store.ErrAdmissionBusy):
 		// Not counted with queue_full: the queue may have room.
 		return jobs.Job{}, false, ErrAdmissionBusy
@@ -298,7 +298,7 @@ func (s *Service) SubmitBatch(ctx context.Context, items []BatchItem) ([]jobs.Jo
 		for _, j := range built {
 			s.countRejection(j.Type)
 		}
-		err = ErrQueueFull
+		err = queueFull(err)
 	case errors.Is(err, store.ErrAdmissionBusy):
 		err = ErrAdmissionBusy
 	case err != nil:
@@ -333,6 +333,8 @@ type EffectiveType struct {
 	MaxMaxAttempts     int `json:"max_max_attempts"`
 	DefaultTimeoutSecs int `json:"default_timeout_seconds"`
 	MaxTimeoutSecs     int `json:"max_timeout_seconds"`
+	// MaxPending is this type's own limit on queued jobs; null when it has none (only the global limit applies).
+	MaxPending *int `json:"max_pending"`
 }
 
 // EffectivePolicy is the whole effective configuration of the submission side.
@@ -363,6 +365,10 @@ func (s *Service) Effective() EffectivePolicy {
 		if pol.MaxTimeoutSecs > 0 && pol.MaxTimeoutSecs < e.MaxTimeoutSecs {
 			e.MaxTimeoutSecs = pol.MaxTimeoutSecs
 		}
+		if pol.MaxPending > 0 {
+			limit := pol.MaxPending
+			e.MaxPending = &limit
+		}
 		out.JobTypes[t] = e
 	}
 	return out
@@ -389,4 +395,25 @@ func (s *Service) QueueFullRejections() (since time.Time, byType map[string]uint
 		byType[t] = n
 	}
 	return s.startedAt, byType
+}
+
+// QueueFullError is ErrQueueFull when the refusal came from one job type's own limit; JobType and Limit say
+// which. errors.Is(err, ErrQueueFull) is true for it.
+type QueueFullError struct {
+	JobType string
+	Limit   int
+}
+
+func (e *QueueFullError) Error() string { return ErrQueueFull.Error() }
+
+// Is makes a QueueFullError match ErrQueueFull.
+func (e *QueueFullError) Is(target error) bool { return target == ErrQueueFull }
+
+// queueFull converts a store refusal into the service's error, keeping the type and limit when the store named them.
+func queueFull(err error) error {
+	var tf *store.TypeFullError
+	if errors.As(err, &tf) && tf.Type != "" {
+		return &QueueFullError{JobType: tf.Type, Limit: tf.Limit}
+	}
+	return ErrQueueFull
 }

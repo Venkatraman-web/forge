@@ -1,0 +1,16 @@
+---
+# Pins the Neon project host names to the front-door addresses measured to be fastest (see docs/benchmarks-aws.md).
+- name: Remove the one-line pins the old bash scripts wrote
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: ' # forge-neon-pin$'
+    state: absent
+
+- name: Neon front-door pins
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} forge-neon-pins (managed by Ansible)"
+    block: |
+      {% for p in neon_pins %}
+      {{ p.ip }} {{ p.host }}
+      {% endfor %}

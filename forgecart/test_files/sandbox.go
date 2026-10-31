@@ -30,16 +30,16 @@ import (
 
 var runIDRe = regexp.MustCompile(`^[a-z0-9]{6,16}$`)
 
-// jobsPerOrder is how many background jobs one paid order produces: one per
-// business worker.
-var jobsPerOrder = len(WorkerTypes)
+// jobsPerOrder is how many result rows one paid order leaves, one in each of the four
+// result tables (invoice, fulfillment, notification, inventory reconciliation). Until
+// 2026-10-30 that was also the number of background jobs; since then the first three
+// are written by one job (order.process), so it is two jobs.
+const jobsPerOrder = 4
 
 // WorkerTypes are the business workers, in a fixed order.
 var WorkerTypes = []struct{ Type, Bin, Short string }{
 	{"inventory.reconcile", "forgecart-inventory-worker", "inventory"},
-	{"invoice.generate", "forgecart-invoice-worker", "invoice"},
-	{"notification.send", "forgecart-notification-worker", "notification"},
-	{"fulfillment.prepare", "forgecart-fulfillment-worker", "fulfillment"},
+	{"order.process", "forgecart-order-worker", "order"},
 }
 
 // SandboxConfig describes how the services are configured for a scenario.
@@ -110,6 +110,7 @@ type Sandbox struct {
 	ForgeDBName    string
 	AppDBName      string
 	PayDBName      string // the payment service's database: a second database in the app-db container
+	InvDBName      string // the inventory database: a third database in the app-db container
 
 	mu    sync.Mutex
 	procs map[string]*Proc
@@ -160,7 +161,7 @@ func NewSandbox(repo, runDir, runID string) (*Sandbox, error) {
 	}
 	s := &Sandbox{RunID: runID, Project: "forgecart-lt-" + runID, Repo: repo, RunDir: runDir,
 		BinDir: filepath.Join(runDir, "bin"), LogDir: filepath.Join(runDir, "logs"),
-		password: randHex(12), key: randHex(24), apiKey: randHex(24), payKey: randHex(24), ForgeDBName: "forge_lt", AppDBName: "forgecart_lt", PayDBName: "forgecart_pay_lt", procs: map[string]*Proc{}}
+		password: randHex(12), key: randHex(24), apiKey: randHex(24), payKey: randHex(24), ForgeDBName: "forge_lt", AppDBName: "forgecart_lt", InvDBName: "forgecart_inv_lt", PayDBName: "forgecart_pay_lt", procs: map[string]*Proc{}}
 	for _, p := range []*int{&s.Ports.ForgeAPI, &s.Ports.ForgeWorker, &s.Ports.CartAPI, &s.Ports.PaymentAPI, &s.Ports.ForgeDB, &s.Ports.AppDB} {
 		port, err := freePort()
 		if err != nil {
@@ -185,6 +186,18 @@ func (s *Sandbox) appURL() string {
 
 func (s *Sandbox) payURL() string {
 	return fmt.Sprintf("postgres://lt:%s@127.0.0.1:%d/%s?sslmode=disable", s.password, s.Ports.AppDB, s.PayDBName)
+}
+
+func (s *Sandbox) invURL() string {
+	return fmt.Sprintf("postgres://lt:%s@127.0.0.1:%d/%s?sslmode=disable", s.password, s.Ports.AppDB, s.InvDBName)
+}
+
+// InventoryDBURL returns the inventory database URL (never logged).
+func (s *Sandbox) InventoryDBURL() string {
+	if s.attach != nil {
+		return s.attach.InventoryDBURL
+	}
+	return s.invURL()
 }
 
 // PaymentsDBURL returns the payment service's database URL (never logged).
@@ -424,14 +437,23 @@ func (s *Sandbox) ResetState(ctx context.Context, cfg SandboxConfig) error {
 	if _, err := s.psql(ctx, "app-db", "postgres", "CREATE DATABASE "+s.PayDBName); err != nil {
 		return err
 	}
+	if _, err := s.psql(ctx, "app-db", "postgres", fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", s.InvDBName)); err != nil {
+		return err
+	}
+	if _, err := s.psql(ctx, "app-db", "postgres", "CREATE DATABASE "+s.InvDBName); err != nil {
+		return err
+	}
+	if out, err := run(ctx, s.Repo, nil, "atlas", "migrate", "apply", "--dir", "file://forgecart/inventory_migrations", "--url", s.invURL()); err != nil {
+		return fmt.Errorf("inventory migrations failed: %s", strings.TrimSpace(tail(out, 400)))
+	}
 	if out, err := run(ctx, s.Repo, nil, "atlas", "migrate", "apply", "--dir", "file://forgecart/payments_migrations", "--url", s.payURL()); err != nil {
 		return fmt.Errorf("payment service migrations failed: %s", strings.TrimSpace(tail(out, 400)))
 	}
-	env := []string{"PATH=" + os.Getenv("PATH"), "FORGECART_DATABASE_URL=" + s.appURL()}
+	env := []string{"PATH=" + os.Getenv("PATH"), "FORGECART_DATABASE_URL=" + s.appURL(), "FORGECART_INVENTORY_DATABASE_URL=" + s.invURL()}
 	if out, err := run(ctx, s.Repo, env, filepath.Join(s.BinDir, "forgecart"), "seed"); err != nil {
 		return fmt.Errorf("seeding failed: %s", strings.TrimSpace(tail(out, 300)))
 	}
-	if _, err := s.psql(ctx, "app-db", s.AppDBName, fmt.Sprintf("UPDATE products SET inventory_quantity = %d", cfg.Inventory)); err != nil {
+	if _, err := s.psql(ctx, "app-db", s.InvDBName, fmt.Sprintf("UPDATE products SET inventory_quantity = %d", cfg.Inventory)); err != nil {
 		return err
 	}
 	return s.startServices(ctx, cfg)
@@ -486,7 +508,7 @@ func (s *Sandbox) forgeEnv(cfg SandboxConfig) []string {
 }
 
 func (s *Sandbox) cartEnv(cfg SandboxConfig) []string {
-	return []string{"PATH=" + os.Getenv("PATH"), "FORGECART_DATABASE_URL=" + s.appURL(),
+	return []string{"PATH=" + os.Getenv("PATH"), "FORGECART_DATABASE_URL=" + s.appURL(), "FORGECART_INVENTORY_DATABASE_URL=" + s.invURL(),
 		fmt.Sprintf("FORGECART_ADDR=127.0.0.1:%d", s.Ports.CartAPI),
 		fmt.Sprintf("FORGECART_PAYMENT_URL=http://127.0.0.1:%d", s.Ports.PaymentAPI), "FORGECART_PAYMENT_API_KEY=" + s.payKey}
 }

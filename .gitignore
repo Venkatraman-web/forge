@@ -69,3 +69,15 @@ docs/history/
 
 # The MIT licence text is added on GitHub itself (Add file > Create new file > LICENSE), so it is not tracked here.
 LICENSE
+
+# Infrastructure code: generated inventory and Terraform state never go into git.
+infra/ansible/inventory/hosts.ini
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars
+infra/ansible/build/
+infra/ansible/inventory/group_vars/all/neon.local.yml
+
+# Stray binary built by "go build" in the repository root.
+/test_files

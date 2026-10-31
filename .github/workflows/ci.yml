@@ -26,3 +26,89 @@ jobs:
         run: go vet ./...
       - name: go build
         run: go build ./...
+
+  # The migrations in migrations/ must agree with the GORM model and carry a valid checksum file.
+  # (Atlas starts a throw-away PostgreSQL in Docker to plan the diff, which the runner has.)
+  migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ariga/setup-atlas@v0
+      - name: validate the migration directory
+        run: atlas migrate validate --env local
+      - name: the model and the migrations agree
+        run: |
+          atlas migrate diff ci_check --env local
+          if [ -n "$(git status --porcelain migrations)" ]; then
+            echo "the GORM model and the migrations differ; run atlas migrate diff and commit the result:"
+            git status --porcelain migrations
+            exit 1
+          fi
+
+  # The image must build and start. Without a database it must stop with a clear message about the
+  # missing setting (a real database check is the compose quickstart in the README).
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: forge:ci
+      - name: the image starts and asks for its settings
+        run: |
+          out="$(docker run --rm forge:ci 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q FORGE_DATABASE_URL
+
+  # Reports known vulnerabilities in the modules and the Go standard library. It does not fail the build:
+  # a finding in the standard library is fixed by a newer Go patch release, and that is a decision, not a code change.
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+
+  # The infrastructure files (infra/): Terraform must be formatted and valid, and the Ansible playbooks must parse and pass the linter.
+  # Nothing here touches AWS or any machine: validate needs no credentials and the playbooks are only read.
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.1
+      - name: terraform fmt
+        working-directory: infra/terraform
+        run: terraform fmt -check -recursive
+      - name: terraform validate
+        working-directory: infra/terraform
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install ansible
+        run: pip install ansible-core ansible-lint
+      - name: ansible syntax check
+        working-directory: infra/ansible
+        run: |
+          for p in playbooks/*.yml; do
+            ansible-playbook -i localhost, --syntax-check "$p"
+          done
+      - name: ansible-lint
+        working-directory: infra/ansible
+        run: ansible-lint playbooks roles
+

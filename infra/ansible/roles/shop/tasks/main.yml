@@ -1,0 +1,60 @@
+---
+# The shop, the payment service and the four dispatcher replicas. Each program is installed under the release label and
+# the path the service starts (/opt/cart/<name>) becomes a link to it, so the previous release stays on disk for a rollback.
+# /etc/cart.env and /etc/payments.env (database URLs, keys) are NOT managed here; only their mode is checked.
+- name: Fingerprints of the binaries built here
+  ansible.builtin.stat:
+    path: "{{ artifact_dir }}/{{ item }}"
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: shop_artifacts
+  loop: "{{ shop_programs }}"
+
+- name: All of them were built (run infra/ansible/build.sh first)
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "{{ item.item }} is missing in {{ artifact_dir }}; run build.sh"
+  loop: "{{ shop_artifacts.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: The binaries are installed under the release label
+  ansible.builtin.copy:
+    src: "{{ artifact_dir }}/{{ item }}"
+    dest: "{{ cart_dir }}/{{ item }}-{{ release_label }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ shop_programs }}"
+  notify: "Restart {{ item }}"
+
+- name: The path each service starts is a link to the release
+  ansible.builtin.file:
+    src: "{{ cart_dir }}/{{ item }}-{{ release_label }}"
+    dest: "{{ cart_dir }}/{{ item }}"
+    state: link
+    force: true
+  loop: "{{ shop_programs }}"
+  notify: "Restart {{ item }}"
+
+- name: The settings files with the keys are private
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "0600"
+  loop:
+    - /etc/cart.env
+    - /etc/payments.env
+
+- name: The services are enabled at boot and running
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ shop_services }}"
+
+- name: Apply the restarts now, before checking
+  ansible.builtin.meta: flush_handlers
+
+- name: Check what is running
+  ansible.builtin.import_tasks: verify.yml

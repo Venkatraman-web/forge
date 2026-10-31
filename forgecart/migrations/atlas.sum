@@ -1,4 +1,4 @@
-h1:FbpptH2tj96267pzTRfVx6bfmNe5xNwyVPaFrNezSbI=
+h1:b6dJ9mIQxTPC9fNNh02CBBX6OIJsnJwCmZOZaPgHNXY=
 20260101000001_create_products.sql h1:o/rL0/hXQ4yqD6NBqOk1pYKWeo+pNHbWVFgDZfZg4es=
 20260101000002_create_orders.sql h1:hc+LysTCGbYsHGL7dUJuQyCHlx8V1fUTiQAfXJTapzs=
 20260101000003_create_payment_attempts.sql h1:ugCCr1KmatP8nhna0pGqUgVEkKkQgQ7yjk0lyc/3zmk=
@@ -17,3 +17,4 @@ h1:FbpptH2tj96267pzTRfVx6bfmNe5xNwyVPaFrNezSbI=
 20260101000016_orders_paid_attempt.sql h1:Va+21aEcmPA6BqAw9OnLwM99S0nbK2L2sg9MLeu45QM=
 20260101000017_payment_sweep_cursor.sql h1:XALzAnhyWwvzrmqdocy26Xepz/0Zbr9ez/zrkWnywyw=
 20260101000018_pending_orders_index.sql h1:jwPRil6C8oCuUh3bdTR5dy1W8PtXuoYSL3vHoji2s/Y=
+20260101000019_split_inventory.sql h1:cYllaR+jzjra6TLej0ciupadFM9kU771lx6BVG8NmJI=
