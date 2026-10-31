@@ -11,7 +11,7 @@ COPY internal ./internal
 COPY sdk ./sdk
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/forge ./cmd/forge
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN adduser -D -H -u 10001 forge
 USER forge
 COPY --from=build /out/forge /usr/local/bin/forge
