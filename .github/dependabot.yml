@@ -1,20 +1,27 @@
-# Weekly update proposals for the Go modules, the GitHub Actions used by the workflows, and the Docker base images.
+# Weekly update proposals (at most 3 open pull requests per kind; all Actions updates arrive in one grouped pull request) for the Go modules, the GitHub Actions used by the workflows, and the Docker base images.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
+    open-pull-requests-limit: 3
     schedule:
       interval: weekly
   - package-ecosystem: github-actions
     directory: /
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
     schedule:
       interval: weekly
   - package-ecosystem: docker
     directory: /
+    open-pull-requests-limit: 3
     schedule:
       interval: weekly
   - package-ecosystem: terraform
     directory: /infra/terraform
+    open-pull-requests-limit: 3
     schedule:
       interval: weekly
 
