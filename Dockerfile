@@ -2,7 +2,7 @@
 # Two stages: compile with the Go toolchain, then copy only the static binary
 # into a small image that runs as an unprivileged user.
 # The Go version must be at least the "go" line of go.mod; the official image tracks the latest patch release.
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
