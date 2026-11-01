@@ -40,7 +40,7 @@ with [`sdk/workerruntime`](sdk/workerruntime).
 You need Go 1.26 or newer and a running Forge (the quickstart above). In your own Go project:
 
 ```bash
-go get github.com/Venkatraman-web/forge@v0.1.0
+go get github.com/Venkatraman-web/forge@v0.2.1
 ```
 
 **1. Submit jobs from your application** with `forgeclient`:
@@ -127,3 +127,5 @@ off in chaos tests (sections 62 to 69). Every number, and how it was measured, i
 | look up a setting, an endpoint or the SDK | [docs/reference.md](docs/reference.md) |
 | see the measurements | [docs/benchmarks-aws.md](docs/benchmarks-aws.md) |
 | see why it is built this way | [docs/decisions/](docs/decisions/) |
+| see what changed in each version | [CHANGELOG.md](CHANGELOG.md) |
+| see how the machines are managed and the security checks | [docs/deploy-with-terraform.md](docs/deploy-with-terraform.md), [docs/deploy-with-ansible.md](docs/deploy-with-ansible.md), [docs/security-tests.md](docs/security-tests.md) |
