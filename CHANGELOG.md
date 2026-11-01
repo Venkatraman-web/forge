@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 (unreleased; written 2026-11-01)
+## v0.2.0 (2026-11-01)
 
 Everything here was checked by scripted runs and by hand on AWS test machines and Neon free-tier databases.
 The repository has no automated tests. Numbers are in [docs/benchmarks-aws.md](docs/benchmarks-aws.md)
