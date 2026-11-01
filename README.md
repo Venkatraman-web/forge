@@ -14,7 +14,7 @@ else's jobs are in it.
 
 ## Try it in five minutes
 
-You need Docker (with Compose) and Go 1.25 or newer.
+You need Docker (with Compose) and Go 1.26 or newer.
 
 ```bash
 cp .env.example .env
@@ -37,7 +37,7 @@ with [`sdk/workerruntime`](sdk/workerruntime).
 
 ## Use the SDK in your own project
 
-You need Go 1.25 or newer and a running Forge (the quickstart above). In your own Go project:
+You need Go 1.26 or newer and a running Forge (the quickstart above). In your own Go project:
 
 ```bash
 go get github.com/Venkatraman-web/forge@v0.1.0

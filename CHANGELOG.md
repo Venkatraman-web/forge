@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.1 (2026-11-01)
+
+### Security
+
+- `github.com/jackc/pgx/v5` 5.5.5 to 5.11.0: fixes GO-2026-5004 (SQL injection through placeholder confusion with dollar-quoted
+  string literals, fixed in 5.9.2), which `govulncheck` reported as reachable from ForgeCart's inventory code. Whether any of
+  our queries could actually be exploited was not examined.
+
+### Changed
+
+- Dependency updates from Dependabot: `gorm.io/driver/postgres` 1.6.3, `prometheus/client_golang` 1.25.0, and the GitHub Actions
+  the workflows use (one grouped update). **The minimum Go version is now 1.26** (the `go` line in go.mod was raised by a dependency).
+- CI runs only on pushes to `main` and on pull requests; Dependabot opens at most 3 pull requests per kind.
+- The image check in CI accepts any missing `FORGE_` setting (the job types are asked for first).
+
 ## v0.2.0 (2026-11-01)
 
 Everything here was checked by scripted runs and by hand on AWS test machines and Neon free-tier databases.
@@ -24,7 +39,7 @@ The repository has no automated tests. Numbers are in [docs/benchmarks-aws.md](d
 
 - ForgeCart sends **two** background jobs per paid order (`inventory.reconcile`, `order.process`) instead of four.
 - `GET /v1/jobs/{id}` answers `404` at once for an id that is not of the form `job_` plus 16 hex digits.
-- Minimum Go version is **1.25** (go.mod, Dockerfile builder image `golang:1.26-alpine`).
+- Minimum Go version is **1.25** at v0.2.0 (go.mod, Dockerfile builder image `golang:1.26-alpine`).
 - ForgeCart under database outages answers `503` with a JSON error instead of failing in other ways, and unknown routes
   answer a JSON `404`.
 
